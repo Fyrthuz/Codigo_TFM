@@ -12,3 +12,4 @@ carvana/train_images/
 **/*.npz
 **/*.gz
 **/*.pyc
+**/*.tif

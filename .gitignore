@@ -1,0 +1,14 @@
+IPSeg/
+**/*.zip
+**/*.tar.gz
+**/*.jpg
+**/*.png
+**/*.jpeg
+carvana/train_images/
+**/*.tiff
+**/*ubyte
+**/*.csv
+**/*.npy
+**/*.npz
+**/*.gz
+**/*.pyc

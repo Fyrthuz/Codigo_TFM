@@ -1,0 +1,2 @@
+python unet.py
+python combined_pipeline_own_model.py combined_config.yaml

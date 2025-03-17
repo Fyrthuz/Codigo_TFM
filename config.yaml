@@ -1,0 +1,41 @@
+paths:
+  save_path: "./pipeline"
+  image_path: "./MRI/filtered_data/TCGA_CS_5395_19981004/TCGA_CS_5395_19981004_12.tif"
+  mask_path: "./MRI/filtered_data/TCGA_CS_5395_19981004/TCGA_CS_5395_19981004_12_mask.tif"
+
+directories:
+  - "base"
+  - "tta"
+  - "mc_dropout"
+  - "noisy"
+  - "refined"
+
+inference:
+  num_samples: 100
+  num_classes: 2
+  activation: "sigmoid"
+
+model:
+  name: "unet"
+  in_channels: 3
+  out_channels: 1
+  init_features: 32
+  pretrained: True
+
+fusion:
+  weighting_method: "inverse"   # Options: "inverse", "exponential", "powerlaw"
+  beta: 1.0
+  alpha: 1.0
+  threshold_method: "otsu"        # Options: "otsu", "percentile", "mean_std"
+  percentile: 50
+  k: 0.5
+  epsilon: 1e-6
+
+crf:
+  sdims: [5, 5]
+  schan: [5, 5, 5]
+  n_iters: 5
+  epsilon: 1e-8
+
+noisy:
+  noise_std: 0.01

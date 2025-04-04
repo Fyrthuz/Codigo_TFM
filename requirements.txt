@@ -9,5 +9,13 @@ torchvision==0.14.1
 pillow==11.1.0
 pandas==2.2.3
 tqdm==4.67.1
+scikit-image
+imageio
+medpy
+opencv-python
+seaborn
+pyyaml
+git+https://github.com/facebookresearch/segment-anything.git
+git+https://github.com/JJGO/UniverSeg.git
 
 ###

@@ -1,0 +1,63 @@
+paths:
+  save_path: "./combined_pipeline_newpipeline_medsam"
+  image_path: "data/images"
+  mask_path: "data/masks"
+  root_path: "./MRI/filtered_data/"
+
+directories:
+  - "mc_dropout"
+  - "tta"
+  - "noisy"
+  - "base"
+  - "refined"
+  - "original"
+
+inference:
+  num_samples: 10
+  num_classes: 2
+  activation: "sigmoid"
+  batch_size: 1
+
+model:
+  name: "unet"        # Model name as used in torch.hub.load
+  in_channels: 3
+  out_channels: 1
+  init_features: 32
+  pretrained: True
+
+medsam:
+  model_type: "vit_b"  # Or "vit_l", "vit_h" depending on the checkpoint
+  checkpoint: "/mnt/netapp2/Store_uni/home/usc/ci/fgs/git_repo/Codigo_TFM/medsam_vit_b.pth" # IMPORTANT: Update this path
+
+fusion:
+  weighting_method: "inverse"
+  beta: 1.0
+  alpha: 1.0
+  threshold_method: "naive"
+  percentile: 50
+  k: 0.5
+  epsilon: 1e-6
+
+crf:
+  sdims: [5, 5]
+  schan: [5, 5, 5]
+  n_iters: 5
+  epsilon: 1e-8
+
+noisy:
+  noise_std: 0.2
+
+mc_dropout:
+  p: 0.01
+
+subset:
+  # subset_size: 50  # Process only the first 5 samples from the dataset
+  subset_size: 5  # Process only the first 5 samples from the dataset
+
+certainty_refinement:
+  enabled: True
+  alpha: 0.6
+  threshold: 0.5
+
+uncertainty_metric:
+  threshold: 0.5

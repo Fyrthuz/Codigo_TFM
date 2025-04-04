@@ -13,3 +13,4 @@ carvana/train_images/
 **/*.gz
 **/*.pyc
 **/*.tif
+medsam_vit_b.pth

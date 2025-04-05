@@ -12,6 +12,10 @@
 
 module load cesga/system miniconda3/22.11.1-1
 conda activate TFM_final
+
+# Para asegurarse de que se carga correctamente el entorno
+conda deactivate
+conda activate TFM_final
 # cd /mnt/netapp2/Store_uni/home/usc/ci/fgs/git_repo/Codigo_TFG
 srun python combined_pipeline_medsam.py combined_config_medsam.yaml
 # srun python see_med_sam_architecture.py

@@ -392,107 +392,90 @@ def weighted_average_with_uncertainty(mc_mean, mc_uncert, tta_mean, tta_uncert, 
 
     return consensus_prob, consensus_uncertainty, consensus_mask
 
-
 def refine_with_crf_uncertainty(image, prob_map, uncertainty_map,
                                 sdims=(5, 5), schan=(5, 5, 5),
                                 n_iters=5, epsilon=1e-8):
-    # Ensure image is HWC uint8 numpy array
+    # --- Handle image input ---
     if isinstance(image, torch.Tensor):
-        image = tensor_to_sam_numpy(image) # Use the SAM conversion helper
+        image = image.detach().cpu().numpy()
+        image = np.squeeze(image)
+        if image.ndim == 2:  # grayscale
+            image = np.stack([image]*3, axis=-1)
+        elif image.ndim == 3 and image.shape[0] in [1, 3]:
+            image = np.transpose(image, (1, 2, 0))  # CxHxW -> HxWxC
     elif isinstance(image, PIL.Image.Image):
-         image = np.array(image)
+        image = np.array(image)
 
-    if image.ndim == 3 and image.shape[2] != 3:
-         print(f"Warning: CRF expects RGB image (H, W, 3), got {image.shape}. Trying to convert.")
-         if image.shape[2] == 1:
-              image = np.concatenate([image]*3, axis=2)
-         else:
-              raise ValueError("Cannot convert image to RGB for CRF.")
-    image = np.ascontiguousarray(image) # CRF requires contiguous array
+    image = np.ascontiguousarray(image.astype(np.uint8))  # Ensure uint8 and contiguous
 
-
-    # Ensure prob_map and uncertainty are numpy arrays
+    # --- Process prob_map and uncertainty_map ---
     prob_map = np.asarray(np.squeeze(prob_map))
     uncertainty_map = np.asarray(np.squeeze(uncertainty_map))
 
-    if prob_map.ndim == 2: # Binary case
-        # Stack background (1-prob) and foreground (prob) probabilities
+    if prob_map.ndim == 2:  # Binary case
         prob_stack = np.stack([1 - prob_map, prob_map], axis=0)
         n_classes = 2
-    elif prob_map.ndim == 3: # Multiclass case
-        prob_stack = prob_map
+    elif prob_map.ndim == 3:
         n_classes = prob_map.shape[0]
+        prob_stack = prob_map
     else:
-        raise ValueError(f"prob_map must be 2D (binary) or 3D (multiclass), got {prob_map.shape}")
+        raise ValueError(f"prob_map must be 2D or 3D, got shape {prob_map.shape}")
+
     H, W = prob_stack.shape[1:]
 
-    # Basic check for consistency
+    # --- Sanity checks ---
     if uncertainty_map.shape != (H, W):
         raise ValueError(f"Shape mismatch: prob_map ({H},{W}) vs uncertainty_map {uncertainty_map.shape}")
     if image.shape[:2] != (H, W):
-         raise ValueError(f"Shape mismatch: prob_map ({H},{W}) vs image {image.shape[:2]}")
+        raise ValueError(f"Shape mismatch: prob_map ({H},{W}) vs image {image.shape[:2]}")
 
+    # --- CRF Setup ---
     d = dcrf.DenseCRF2D(W, H, n_classes)
 
-    # Get unary potentials from probabilities, ensure float32
-    # Clamp probabilities slightly for numerical stability with log
     prob_stack_clamped = np.clip(prob_stack, epsilon, 1 - epsilon)
     unary = unary_from_softmax(prob_stack_clamped).astype(np.float32)
 
-    # --- Uncertainty weighting ---
-    # Normalize uncertainty to [0, 1] range
+    # Normalize and flatten uncertainty
     norm_uncert = (uncertainty_map - np.min(uncertainty_map)) / (np.ptp(uncertainty_map) + epsilon)
-    norm_uncert_flat = norm_uncert.flatten().astype(np.float32) # Shape (H*W,)
+    norm_uncert_flat = norm_uncert.flatten().astype(np.float32)
 
-    # Create uniform potentials (equal probability for each class)
+    # Uniform unary (for high uncertainty)
     uniform_unary = np.ones((n_classes, H * W), dtype=np.float32) / n_classes
-    uniform_unary = -np.log(uniform_unary + epsilon) # Convert to energy (neg log prob)
+    uniform_unary = -np.log(uniform_unary + epsilon)
 
-    # Interpolate between model's unary and uniform unary based on uncertainty
-    # High uncertainty -> lean towards uniform unary (less trust in model prediction)
-    # Low uncertainty -> lean towards model's unary
-    # Reshape uncertainty factor to match unary's shape for broadcasting
-    uncertainty_factor = norm_uncert_flat[np.newaxis, :] # Shape (1, H*W)
+    # Blend unary with uniform unary
+    uncertainty_factor = norm_uncert_flat[np.newaxis, :]
     adjusted_unary = (1 - uncertainty_factor) * unary + uncertainty_factor * uniform_unary
-    # --------------------------
 
     d.setUnaryEnergy(adjusted_unary)
 
-    # Add pairwise potentials (contrast-sensitive)
-    # Ensure schan matches image channels (should be 3)
-    if image.shape[2] != len(schan):
-         print(f"Warning: Image channels ({image.shape[2]}) != CRF schan length ({len(schan)}). Adjusting schan.")
-         schan = tuple([schan[0]] * image.shape[2]) # Repeat first value
+    # --- Pairwise potentials ---
+    if image.ndim != 3 or image.shape[2] != len(schan):
+        print(f"Warning: Adjusting schan from {schan} to match image with {image.shape[2]} channels.")
+        schan = tuple([schan[0]] * image.shape[2])
 
     pairwise_bilateral = create_pairwise_bilateral(
-        sdims=sdims, schan=schan, img=image, chdim=2 # chdim=2 for HWC format
+        sdims=sdims, schan=schan, img=image, chdim=2
     )
-    d.addPairwiseEnergy(pairwise_bilateral, compat=10) # Compatibility term, adjust as needed
+    d.addPairwiseEnergy(pairwise_bilateral, compat=10)
 
-    # Add Gaussian pairwise potentials (smoothness term) - Optional
-    # d.addPairwiseGaussian(sxy=(3,3), compat=3) # sxy: spatial std dev, compat: weight
+    # Optional Gaussian term
+    # d.addPairwiseGaussian(sxy=(3, 3), compat=3)
 
-    # Perform inference
-    Q = d.inference(n_iters)
-    Q = np.array(Q) # List of floats to array
-
-    # Reshape back to map format
+    # --- Inference ---
+    Q = np.array(d.inference(n_iters))
     probabilities = Q.reshape((n_classes, H, W))
 
-    # Get final segmentation mask by taking the argmax
     refined_segmentation = np.argmax(probabilities, axis=0).astype(np.uint8)
 
-    # Calculate uncertainty of the refined result (e.g., entropy)
-    # Clamp probabilities before log
+    # --- Uncertainty: entropy ---
     probabilities_clamped = np.clip(probabilities, epsilon, 1 - epsilon)
     refined_uncertainty = -np.sum(probabilities_clamped * np.log(probabilities_clamped), axis=0)
 
-    # Return probabilities (needed for metrics), final mask, and uncertainty map
-    # If original was binary, return only the probability of the positive class [1]
     if n_classes == 2:
-         return probabilities[1], refined_segmentation, refined_uncertainty
-    else: # Multiclass
-         return probabilities, refined_segmentation, refined_uncertainty
+        return probabilities[1], refined_segmentation, refined_uncertainty
+    else:
+        return probabilities, refined_segmentation, refined_uncertainty
 
 def mc_dropout_inference(model: universeg, image_tensor: torch.Tensor, 
                         support_images: torch.Tensor, support_masks: torch.Tensor, 
@@ -755,8 +738,8 @@ if __name__ == "__main__":
         support_masks.append(gt_mask_binary.unsqueeze(0).unsqueeze(0))  # Add batch dim -> (1, 1, H, W)
 
     # Stack along S dimension to get (1, S, 1, H, W)
-    support_images = torch.cat(support_images, dim=1)  # (1, S, 1, H, W)
-    support_masks = torch.cat(support_masks, dim=1)   # (1, S, 1, H, W)
+    support_images = torch.cat(support_images, dim=1).to(device)  # (1, S, 1, H, W)
+    support_masks = torch.cat(support_masks, dim=1).to(device)   # (1, S, 1, H, W)
 
     print("Context set loaded")
     print(f"Support images shape: {support_images.shape}")
@@ -910,291 +893,289 @@ if __name__ == "__main__":
             save_outputs(noise_images, noise_masks, noise_mean_prediction, noise_entropy, noise_mask_pred, noisy_dir, idx)
             print(f"  Noisy - IoU: {noise_iou:.4f}, Dice: {noise_dice:.4f}, Certainty: {noise_certainty:.4f}")
 
+
+            # ----- Fusion of Uncertainty and Segmentation -----
+            print("Running Fusion...")
+            # Use entropy maps from MC, TTA, Noisy as the uncertainty inputs
+            consensus_prob, consensus_uncertainty, consensus_mask_dynamic = weighted_average_with_uncertainty(
+                mc_mean_prediction, mc_entropy,
+                tta_mean_prediction, tta_entropy,
+                noise_mean_prediction, noise_entropy,
+                weighting_method=config_fusion.get("weighting_method", "inverse"),
+                beta=config_fusion.get("beta", 1.0),
+                alpha=config_fusion.get("alpha", 1.0),
+                threshold_method=config_fusion.get("threshold_method", "otsu"), # Use dynamic threshold on consensus_prob
+                percentile=config_fusion.get("percentile", 50),
+                k=config_fusion.get("k", 0.5),
+                epsilon=float(config_fusion.get("epsilon", 1e-6))
+            )
+            # Also compute simple threshold mask for comparison if needed
+            fusion_mask_naive = (consensus_prob > 0.5).astype(np.uint8)
+
+            # Evaluate using the dynamically thresholded mask from the function
+            fusion_iou = compute_iou(consensus_mask_dynamic, gt_mask_np)
+            fusion_dice = compute_dice(consensus_mask_dynamic, gt_mask_np)
+            fusion_metrics_dict = compute_metrics(consensus_prob, gt_mask_np) # Metrics based on probability map
+            fusion_certainty = certainty_score(consensus_uncertainty, gt_mask_np) # Use fused uncertainty
+            sample_metrics["fusion"] = {
+                "iou": fusion_iou, "dice": fusion_dice, "certainty": fusion_certainty,
+                **fusion_metrics_dict
+            }
+
+            # Save fusion results
+            fusion_dir = os.path.join(sample_root_dir, "fusion")
+            os.makedirs(fusion_dir, exist_ok=True)
+            save_image(consensus_prob, os.path.join(fusion_dir, "probability.png"))
+            save_image(consensus_mask_dynamic, os.path.join(fusion_dir, "mask_dynamic_thresh.png")) # Save dynamic mask
+            save_image(fusion_mask_naive, os.path.join(fusion_dir, "mask_naive_thresh.png")) # Save naive mask
+            save_image(consensus_uncertainty, os.path.join(fusion_dir, "uncertainty.png"))
+            print(f"  Fusion (Dynamic Thresh) - IoU: {fusion_iou:.4f}, Dice: {fusion_dice:.4f}, Certainty: {fusion_certainty:.4f}")
+
+
+            # ----- CRF Refinement -----
+            # Apply CRF to the fused probability and uncertainty maps
+            print("Running CRF Refinement...")
+            # refine_with_crf_uncertainty expects binary prob map (prob of class 1)
+            # and corresponding uncertainty map.
+            # image_tensor needs to be passed for pairwise term calculation.
+            crf_prob_class1, final_segmentation, final_uncertainty = refine_with_crf_uncertainty(
+                image_tensor, consensus_prob, consensus_uncertainty, # Pass fused results
+                sdims=tuple(config_crf.get("sdims", (5, 5))),
+                schan=tuple(config_crf.get("schan", (5, ))),
+                n_iters=config_crf.get("n_iters", 5),
+                epsilon=float(config_crf.get("epsilon", 1e-8))
+            )
+            # Evaluate the final CRF mask
+            crf_iou = compute_iou(final_segmentation, gt_mask_np)
+            crf_dice = compute_dice(final_segmentation, gt_mask_np)
+            # Use the probability map output by CRF for other metrics
+            crf_metrics_dict = compute_metrics(crf_prob_class1, gt_mask_np)
+            crf_certainty = certainty_score(final_uncertainty, gt_mask_np) # Use CRF's uncertainty output
+            sample_metrics["crf"] = {
+                "iou": crf_iou, "dice": crf_dice, "certainty": crf_certainty,
+                **crf_metrics_dict
+            }
+
+            # Save CRF results
+            crf_dir = os.path.join(sample_root_dir, "refined")
+            os.makedirs(crf_dir, exist_ok=True)
+            save_image(crf_prob_class1, os.path.join(crf_dir, "probability.png")) # Prob of class 1 after CRF
+            save_image(final_segmentation, os.path.join(crf_dir, "mask.png"))
+            save_image(final_uncertainty, os.path.join(crf_dir, "uncertainty.png"))
+            print(f"  CRF Refinement - IoU: {crf_iou:.4f}, Dice: {crf_dice:.4f}, Certainty: {crf_certainty:.4f}")
+
+
+            # Store metrics for this sample
+            overall_metrics[f"sample_{idx}"] = sample_metrics
+
+        except FileNotFoundError:
+            print(f"Error: Image or mask not found for sample {idx}: {img_path} or {mask_path}")
+            continue # Skip to next sample
+        except ImportError as e:
+             print(f"Import Error: {e}. Make sure all required packages are installed.")
+             break # Stop processing
         except Exception as e:
-            print(e)
-
-    #         # ----- Fusion of Uncertainty and Segmentation -----
-    #         print("Running Fusion...")
-    #         # Use entropy maps from MC, TTA, Noisy as the uncertainty inputs
-    #         consensus_prob, consensus_uncertainty, consensus_mask_dynamic = weighted_average_with_uncertainty(
-    #             mc_mean_prediction, mc_entropy,
-    #             tta_mean_prediction, tta_entropy,
-    #             noise_mean_prediction, noise_entropy,
-    #             weighting_method=config_fusion.get("weighting_method", "inverse"),
-    #             beta=config_fusion.get("beta", 1.0),
-    #             alpha=config_fusion.get("alpha", 1.0),
-    #             threshold_method=config_fusion.get("threshold_method", "otsu"), # Use dynamic threshold on consensus_prob
-    #             percentile=config_fusion.get("percentile", 50),
-    #             k=config_fusion.get("k", 0.5),
-    #             epsilon=float(config_fusion.get("epsilon", 1e-6))
-    #         )
-    #         # Also compute simple threshold mask for comparison if needed
-    #         fusion_mask_naive = (consensus_prob > 0.5).astype(np.uint8)
-
-    #         # Evaluate using the dynamically thresholded mask from the function
-    #         fusion_iou = compute_iou(consensus_mask_dynamic, gt_mask_np)
-    #         fusion_dice = compute_dice(consensus_mask_dynamic, gt_mask_np)
-    #         fusion_metrics_dict = compute_metrics(consensus_prob, gt_mask_np) # Metrics based on probability map
-    #         fusion_certainty = certainty_score(consensus_uncertainty, gt_mask_np) # Use fused uncertainty
-    #         sample_metrics["fusion"] = {
-    #             "iou": fusion_iou, "dice": fusion_dice, "certainty": fusion_certainty,
-    #             **fusion_metrics_dict
-    #         }
-
-    #         # Save fusion results
-    #         fusion_dir = os.path.join(sample_root_dir, "fusion")
-    #         os.makedirs(fusion_dir, exist_ok=True)
-    #         save_image(consensus_prob, os.path.join(fusion_dir, "probability.png"))
-    #         save_image(consensus_mask_dynamic, os.path.join(fusion_dir, "mask_dynamic_thresh.png")) # Save dynamic mask
-    #         save_image(fusion_mask_naive, os.path.join(fusion_dir, "mask_naive_thresh.png")) # Save naive mask
-    #         save_image(consensus_uncertainty, os.path.join(fusion_dir, "uncertainty.png"))
-    #         print(f"  Fusion (Dynamic Thresh) - IoU: {fusion_iou:.4f}, Dice: {fusion_dice:.4f}, Certainty: {fusion_certainty:.4f}")
+            print(f"Error processing sample {idx} ({os.path.basename(img_path)}): {e}")
+            import traceback
+            traceback.print_exc() # Print detailed traceback
+            # Store NaN for this sample's metrics to avoid breaking aggregation
+            overall_metrics[f"sample_{idx}"] = {method: {metric: np.nan for metric in metrics} for method in methods}
+            continue # Skip to next sample
 
 
-    #         # ----- CRF Refinement -----
-    #         # Apply CRF to the fused probability and uncertainty maps
-    #         print("Running CRF Refinement...")
-    #         # refine_with_crf_uncertainty expects binary prob map (prob of class 1)
-    #         # and corresponding uncertainty map.
-    #         # image_tensor needs to be passed for pairwise term calculation.
-    #         crf_prob_class1, final_segmentation, final_uncertainty = refine_with_crf_uncertainty(
-    #             image_tensor, consensus_prob, consensus_uncertainty, # Pass fused results
-    #             sdims=tuple(config_crf.get("sdims", (5, 5))),
-    #             schan=tuple(config_crf.get("schan", (5, 5, 5))),
-    #             n_iters=config_crf.get("n_iters", 5),
-    #             epsilon=float(config_crf.get("epsilon", 1e-8))
-    #         )
-    #         # Evaluate the final CRF mask
-    #         crf_iou = compute_iou(final_segmentation, gt_mask_np)
-    #         crf_dice = compute_dice(final_segmentation, gt_mask_np)
-    #         # Use the probability map output by CRF for other metrics
-    #         crf_metrics_dict = compute_metrics(crf_prob_class1, gt_mask_np)
-    #         crf_certainty = certainty_score(final_uncertainty, gt_mask_np) # Use CRF's uncertainty output
-    #         sample_metrics["crf"] = {
-    #             "iou": crf_iou, "dice": crf_dice, "certainty": crf_certainty,
-    #             **crf_metrics_dict
-    #         }
-
-    #         # Save CRF results
-    #         crf_dir = os.path.join(sample_root_dir, "refined")
-    #         os.makedirs(crf_dir, exist_ok=True)
-    #         save_image(crf_prob_class1, os.path.join(crf_dir, "probability.png")) # Prob of class 1 after CRF
-    #         save_image(final_segmentation, os.path.join(crf_dir, "mask.png"))
-    #         save_image(final_uncertainty, os.path.join(crf_dir, "uncertainty.png"))
-    #         print(f"  CRF Refinement - IoU: {crf_iou:.4f}, Dice: {crf_dice:.4f}, Certainty: {crf_certainty:.4f}")
+    # --- Aggregation and Visualization ---
+    print("\n--- Aggregating and Saving Results ---")
+    if not overall_metrics:
+         print("No samples were processed successfully. Skipping aggregation.")
+         exit()
 
 
-    #         # Store metrics for this sample
-    #         overall_metrics[f"sample_{idx}"] = sample_metrics
+    visualization_dir = os.path.join(SAVE_PATH, "visualizations")
+    os.makedirs(visualization_dir, exist_ok=True)
 
-    #     except FileNotFoundError:
-    #         print(f"Error: Image or mask not found for sample {idx}: {img_path} or {mask_path}")
-    #         continue # Skip to next sample
-    #     except ImportError as e:
-    #          print(f"Import Error: {e}. Make sure all required packages are installed.")
-    #          break # Stop processing
-    #     except Exception as e:
-    #         print(f"Error processing sample {idx} ({os.path.basename(img_path)}): {e}")
-    #         import traceback
-    #         traceback.print_exc() # Print detailed traceback
-    #         # Store NaN for this sample's metrics to avoid breaking aggregation
-    #         overall_metrics[f"sample_{idx}"] = {method: {metric: np.nan for metric in metrics} for method in methods}
-    #         continue # Skip to next sample
+    methods = ['normal', 'mc_dropout', 'tta', 'noisy', 'fusion', 'crf']
+    metrics = ['iou', 'dice', 'nll', 'ece', 'brier', 'accuracy', 'precision', 'recall', 'certainty']
 
+    # Use pandas for easier aggregation and handling of missing data (NaN)
+    # Create a flat dictionary first { ('sample_id', 'method', 'metric'): value }
+    flat_metrics = {}
+    for sample_id, methods_data in overall_metrics.items():
+         for method, metrics_data in methods_data.items():
+              if method in methods: # Only include expected methods
+                   for metric, value in metrics_data.items():
+                        if metric in metrics: # Only include expected metrics
+                             flat_metrics[(sample_id, method, metric)] = value
 
-    # # --- Aggregation and Visualization ---
-    # print("\n--- Aggregating and Saving Results ---")
-    # if not overall_metrics:
-    #      print("No samples were processed successfully. Skipping aggregation.")
-    #      exit()
+    # Convert to MultiIndex DataFrame
+    if not flat_metrics:
+         print("No valid metric data collected. Cannot create summary.")
+         exit()
 
+    multi_index = pd.MultiIndex.from_tuples(flat_metrics.keys(), names=['sample', 'method', 'metric'])
+    metrics_df = pd.Series(flat_metrics, index=multi_index)
 
-    # visualization_dir = os.path.join(SAVE_PATH, "visualizations")
-    # os.makedirs(visualization_dir, exist_ok=True)
-
-    # methods = ['normal', 'mc_dropout', 'tta', 'noisy', 'fusion', 'crf']
-    # metrics = ['iou', 'dice', 'nll', 'ece', 'brier', 'accuracy', 'precision', 'recall', 'certainty']
-
-    # # Use pandas for easier aggregation and handling of missing data (NaN)
-    # # Create a flat dictionary first { ('sample_id', 'method', 'metric'): value }
-    # flat_metrics = {}
-    # for sample_id, methods_data in overall_metrics.items():
-    #      for method, metrics_data in methods_data.items():
-    #           if method in methods: # Only include expected methods
-    #                for metric, value in metrics_data.items():
-    #                     if metric in metrics: # Only include expected metrics
-    #                          flat_metrics[(sample_id, method, metric)] = value
-
-    # # Convert to MultiIndex DataFrame
-    # if not flat_metrics:
-    #      print("No valid metric data collected. Cannot create summary.")
-    #      exit()
-
-    # multi_index = pd.MultiIndex.from_tuples(flat_metrics.keys(), names=['sample', 'method', 'metric'])
-    # metrics_df = pd.Series(flat_metrics, index=multi_index)
-
-    # # Unstack to get methods as columns, metrics as lower index
-    # metrics_table = metrics_df.unstack(level='method')
-    # # Further unstack to get metrics as columns
-    # detailed_table = metrics_table.unstack(level='metric')
+    # Unstack to get methods as columns, metrics as lower index
+    metrics_table = metrics_df.unstack(level='method')
+    # Further unstack to get metrics as columns
+    detailed_table = metrics_table.unstack(level='metric')
 
 
-    # # Save detailed table (Samples x (Method_Metric))
-    # detailed_csv_path = os.path.join(visualization_dir, 'detailed_metrics_per_sample.csv')
-    # try:
-    #     detailed_table.to_csv(detailed_csv_path)
-    #     print(f"Detailed metrics per sample saved to {detailed_csv_path}")
-    # except Exception as e:
-    #     print(f"Error saving detailed CSV: {e}")
+    # Save detailed table (Samples x (Method_Metric))
+    detailed_csv_path = os.path.join(visualization_dir, 'detailed_metrics_per_sample.csv')
+    try:
+        detailed_table.to_csv(detailed_csv_path)
+        print(f"Detailed metrics per sample saved to {detailed_csv_path}")
+    except Exception as e:
+        print(f"Error saving detailed CSV: {e}")
 
 
-    # # Calculate mean across samples for the summary
-    # # Group by method and metric, then calculate mean
-    # mean_results = metrics_df.groupby(level=['method', 'metric']).mean()
-    # mean_summary_table = mean_results.unstack(level='metric') # Metrics as columns, methods as rows
+    # Calculate mean across samples for the summary
+    # Group by method and metric, then calculate mean
+    mean_results = metrics_df.groupby(level=['method', 'metric']).mean()
+    mean_summary_table = mean_results.unstack(level='metric') # Metrics as columns, methods as rows
 
-    # # Reindex to ensure all methods/metrics are present, fill missing with NaN
-    # mean_summary_table = mean_summary_table.reindex(index=methods, columns=metrics)
-
-
-    # # Save summary table
-    # summary_csv_path = os.path.join(visualization_dir, 'metrics_summary_mean.csv')
-    # try:
-    #     mean_summary_table.to_csv(summary_csv_path)
-    #     print(f"Mean metrics summary saved to {summary_csv_path}")
-    #     print("\nMean Metrics Summary:")
-    #     print(mean_summary_table)
-    # except Exception as e:
-    #     print(f"Error saving summary CSV: {e}")
+    # Reindex to ensure all methods/metrics are present, fill missing with NaN
+    mean_summary_table = mean_summary_table.reindex(index=methods, columns=metrics)
 
 
-    # # --- Plotting ---
-    # # Plot mean metrics using the summary table
-    # try:
-    #     plt.style.use('ggplot') # Use a style for nicer plots
-    #     num_metrics = len(metrics)
-    #     num_cols = 3
-    #     num_rows = (num_metrics + num_cols - 1) // num_cols
-
-    #     fig, axes = plt.subplots(num_rows, num_cols, figsize=(18, 5 * num_rows), squeeze=False)
-    #     axes = axes.flatten() # Flatten to easily iterate
-
-    #     colors = plt.cm.get_cmap('tab10', len(methods)) # Get distinct colors
-
-    #     for i, metric in enumerate(metrics):
-    #         if metric in mean_summary_table.columns:
-    #             ax = axes[i]
-    #             metric_data = mean_summary_table[metric].reindex(methods) # Ensure correct order
-    #             bars = ax.bar(metric_data.index, metric_data.values, color=[colors(j) for j in range(len(methods))])
-    #             ax.set_title(metric.upper(), fontsize=14)
-    #             ax.set_ylabel("Score", fontsize=12)
-    #             ax.tick_params(axis='x', rotation=45, labelsize=10)
-    #             ax.tick_params(axis='y', labelsize=10)
-    #             ax.grid(axis='y', linestyle='--', alpha=0.7)
-
-    #             # Add value labels on bars
-    #             for bar in bars:
-    #                 height = bar.get_height()
-    #                 if not np.isnan(height):
-    #                      ax.annotate(f'{height:.3f}',
-    #                                   xy=(bar.get_x() + bar.get_width() / 2, height),
-    #                                   xytext=(0, 3), # 3 points vertical offset
-    #                                   textcoords="offset points",
-    #                                   ha='center', va='bottom', fontsize=9)
-    #         else:
-    #              axes[i].set_title(f"{metric.upper()} (No Data)", fontsize=14)
-    #              axes[i].axis('off') # Hide axes if no data
-
-    #     # Hide any unused subplots
-    #     for j in range(i + 1, len(axes)):
-    #         fig.delaxes(axes[j])
-
-    #     plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust layout to prevent title overlap
-    #     fig.suptitle("Mean Performance Metrics Comparison", fontsize=18, y=0.99)
-
-    #     # Add a single legend
-    #     handles = [plt.Rectangle((0, 0), 1, 1, color=colors(j)) for j in range(len(methods))]
-    #     fig.legend(handles, methods, loc='upper right', bbox_to_anchor=(0.98, 0.92), fontsize=12, title="Methods")
+    # Save summary table
+    summary_csv_path = os.path.join(visualization_dir, 'metrics_summary_mean.csv')
+    try:
+        mean_summary_table.to_csv(summary_csv_path)
+        print(f"Mean metrics summary saved to {summary_csv_path}")
+        print("\nMean Metrics Summary:")
+        print(mean_summary_table)
+    except Exception as e:
+        print(f"Error saving summary CSV: {e}")
 
 
-    #     plot_path = os.path.join(visualization_dir, 'mean_metrics_comparison.png')
-    #     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-    #     plt.close(fig)
-    #     print(f"Mean metrics plot saved to {plot_path}")
+    # --- Plotting ---
+    # Plot mean metrics using the summary table
+    try:
+        plt.style.use('ggplot') # Use a style for nicer plots
+        num_metrics = len(metrics)
+        num_cols = 3
+        num_rows = (num_metrics + num_cols - 1) // num_cols
 
-    # except Exception as e:
-    #     print(f"Error generating mean metrics plot: {e}")
-    #     import traceback
-    #     traceback.print_exc()
+        fig, axes = plt.subplots(num_rows, num_cols, figsize=(18, 5 * num_rows), squeeze=False)
+        axes = axes.flatten() # Flatten to easily iterate
 
+        colors = plt.cm.get_cmap('tab10', len(methods)) # Get distinct colors
 
-    # # --- Box Plots for Distribution ---
-    # try:
-    #     # Use the detailed table reshaped: Samples x Methods for each metric
-    #     metric_boxplot_data = metrics_df.unstack(level='method') # Index: (sample, metric), Columns: method
+        for i, metric in enumerate(metrics):
+            if metric in mean_summary_table.columns:
+                ax = axes[i]
+                metric_data = mean_summary_table[metric].reindex(methods) # Ensure correct order
+                bars = ax.bar(metric_data.index, metric_data.values, color=[colors(j) for j in range(len(methods))])
+                ax.set_title(metric.upper(), fontsize=14)
+                ax.set_ylabel("Score", fontsize=12)
+                ax.tick_params(axis='x', rotation=45, labelsize=10)
+                ax.tick_params(axis='y', labelsize=10)
+                ax.grid(axis='y', linestyle='--', alpha=0.7)
 
-    #     num_metrics = len(metrics)
-    #     num_cols = 3
-    #     num_rows = (num_metrics + num_cols - 1) // num_cols
+                # Add value labels on bars
+                for bar in bars:
+                    height = bar.get_height()
+                    if not np.isnan(height):
+                         ax.annotate(f'{height:.3f}',
+                                      xy=(bar.get_x() + bar.get_width() / 2, height),
+                                      xytext=(0, 3), # 3 points vertical offset
+                                      textcoords="offset points",
+                                      ha='center', va='bottom', fontsize=9)
+            else:
+                 axes[i].set_title(f"{metric.upper()} (No Data)", fontsize=14)
+                 axes[i].axis('off') # Hide axes if no data
 
-    #     fig, axes = plt.subplots(num_rows, num_cols, figsize=(18, 5 * num_rows), squeeze=False)
-    #     axes = axes.flatten()
+        # Hide any unused subplots
+        for j in range(i + 1, len(axes)):
+            fig.delaxes(axes[j])
 
-    #     colors = plt.cm.get_cmap('tab10', len(methods))
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust layout to prevent title overlap
+        fig.suptitle("Mean Performance Metrics Comparison", fontsize=18, y=0.99)
 
-    #     for i, metric in enumerate(metrics):
-    #         ax = axes[i]
-    #         # Select data for the current metric, drop samples with NaN for this metric
-    #         if metric in metric_boxplot_data.index.get_level_values('metric'):
-    #              data_for_metric = metric_boxplot_data.loc[(slice(None), metric), :].droplevel('metric').reindex(columns=methods) # Order columns
-    #              # Convert to list of arrays for boxplot, handling potential NaNs per method
-    #              plot_data = [data_for_metric[method].dropna().values for method in methods]
-    #              valid_methods = [methods[k] for k, d in enumerate(plot_data) if len(d) > 0] # Methods with data
-    #              plot_data_filtered = [d for d in plot_data if len(d) > 0] # Data for valid methods
-    #              method_colors = [colors(methods.index(m)) for m in valid_methods] # Colors for valid methods
-
-    #              if plot_data_filtered:
-    #                   bp = ax.boxplot(plot_data_filtered, labels=valid_methods, patch_artist=True, vert=True, showfliers=False) # Hide outliers for cleaner look maybe
-
-    #                   for patch, color in zip(bp['boxes'], method_colors):
-    #                        patch.set_facecolor(color)
-    #                        patch.set_alpha(0.7)
-    #                   for median in bp['medians']:
-    #                        median.set_color('black')
-
-    #                   ax.set_title(metric.upper(), fontsize=14)
-    #                   ax.set_ylabel("Score Distribution", fontsize=12)
-    #                   ax.tick_params(axis='x', rotation=45, labelsize=10)
-    #                   ax.tick_params(axis='y', labelsize=10)
-    #                   ax.grid(axis='y', linestyle='--', alpha=0.7)
-    #              else:
-    #                   ax.set_title(f"{metric.upper()} (No Data)", fontsize=14)
-    #                   ax.axis('off')
-    #         else:
-    #              ax.set_title(f"{metric.upper()} (No Data)", fontsize=14)
-    #              ax.axis('off')
+        # Add a single legend
+        handles = [plt.Rectangle((0, 0), 1, 1, color=colors(j)) for j in range(len(methods))]
+        fig.legend(handles, methods, loc='upper right', bbox_to_anchor=(0.98, 0.92), fontsize=12, title="Methods")
 
 
-    #     # Hide any unused subplots
-    #     for j in range(i + 1, len(axes)):
-    #          fig.delaxes(axes[j])
+        plot_path = os.path.join(visualization_dir, 'mean_metrics_comparison.png')
+        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        print(f"Mean metrics plot saved to {plot_path}")
 
-    #     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    #     fig.suptitle("Metric Score Distribution Across Samples", fontsize=18, y=0.99)
+    except Exception as e:
+        print(f"Error generating mean metrics plot: {e}")
+        import traceback
+        traceback.print_exc()
 
-    #     # Add a single legend (optional, colors identify methods in each plot)
-    #     # handles = [plt.Rectangle((0,0),1,1, color=colors(j)) for j in range(len(methods))]
-    #     # fig.legend(handles, methods, loc='upper right', bbox_to_anchor=(0.98, 0.92), fontsize=12, title="Methods")
 
-    #     boxplot_path = os.path.join(visualization_dir, 'metrics_distribution_boxplots.png')
-    #     plt.savefig(boxplot_path, dpi=150, bbox_inches='tight')
-    #     plt.close(fig)
-    #     print(f"Metrics distribution boxplot saved to {boxplot_path}")
+    # --- Box Plots for Distribution ---
+    try:
+        # Use the detailed table reshaped: Samples x Methods for each metric
+        metric_boxplot_data = metrics_df.unstack(level='method') # Index: (sample, metric), Columns: method
 
-    # except Exception as e:
-    #     print(f"Error generating box plots: {e}")
-    #     import traceback
-    #     traceback.print_exc()
+        num_metrics = len(metrics)
+        num_cols = 3
+        num_rows = (num_metrics + num_cols - 1) // num_cols
+
+        fig, axes = plt.subplots(num_rows, num_cols, figsize=(18, 5 * num_rows), squeeze=False)
+        axes = axes.flatten()
+
+        colors = plt.cm.get_cmap('tab10', len(methods))
+
+        for i, metric in enumerate(metrics):
+            ax = axes[i]
+            # Select data for the current metric, drop samples with NaN for this metric
+            if metric in metric_boxplot_data.index.get_level_values('metric'):
+                 data_for_metric = metric_boxplot_data.loc[(slice(None), metric), :].droplevel('metric').reindex(columns=methods) # Order columns
+                 # Convert to list of arrays for boxplot, handling potential NaNs per method
+                 plot_data = [data_for_metric[method].dropna().values for method in methods]
+                 valid_methods = [methods[k] for k, d in enumerate(plot_data) if len(d) > 0] # Methods with data
+                 plot_data_filtered = [d for d in plot_data if len(d) > 0] # Data for valid methods
+                 method_colors = [colors(methods.index(m)) for m in valid_methods] # Colors for valid methods
+
+                 if plot_data_filtered:
+                      bp = ax.boxplot(plot_data_filtered, labels=valid_methods, patch_artist=True, vert=True, showfliers=False) # Hide outliers for cleaner look maybe
+
+                      for patch, color in zip(bp['boxes'], method_colors):
+                           patch.set_facecolor(color)
+                           patch.set_alpha(0.7)
+                      for median in bp['medians']:
+                           median.set_color('black')
+
+                      ax.set_title(metric.upper(), fontsize=14)
+                      ax.set_ylabel("Score Distribution", fontsize=12)
+                      ax.tick_params(axis='x', rotation=45, labelsize=10)
+                      ax.tick_params(axis='y', labelsize=10)
+                      ax.grid(axis='y', linestyle='--', alpha=0.7)
+                 else:
+                      ax.set_title(f"{metric.upper()} (No Data)", fontsize=14)
+                      ax.axis('off')
+            else:
+                 ax.set_title(f"{metric.upper()} (No Data)", fontsize=14)
+                 ax.axis('off')
+
+
+        # Hide any unused subplots
+        for j in range(i + 1, len(axes)):
+             fig.delaxes(axes[j])
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        fig.suptitle("Metric Score Distribution Across Samples", fontsize=18, y=0.99)
+
+        # Add a single legend (optional, colors identify methods in each plot)
+        # handles = [plt.Rectangle((0,0),1,1, color=colors(j)) for j in range(len(methods))]
+        # fig.legend(handles, methods, loc='upper right', bbox_to_anchor=(0.98, 0.92), fontsize=12, title="Methods")
+
+        boxplot_path = os.path.join(visualization_dir, 'metrics_distribution_boxplots.png')
+        plt.savefig(boxplot_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        print(f"Metrics distribution boxplot saved to {boxplot_path}")
+
+    except Exception as e:
+        print(f"Error generating box plots: {e}")
+        import traceback
+        traceback.print_exc()
 
 
     print("\n--- Pipeline Finished ---")

@@ -895,7 +895,7 @@ if __name__ == "__main__":
              normal_iou = compute_iou(normal_mask, gt_mask_np)
              normal_dice = compute_dice(normal_mask, gt_mask_np)
              normal_metrics_dict = compute_metrics(normal_prob, gt_mask_np)
-             print(normal_mask.shape, np.max(normal_mask), np.min(normal_mask))
+
              # Uncertainty for normal inference is just 1 - probability
              p_normal = normal_prob
              p_other = 1.0 - normal_prob

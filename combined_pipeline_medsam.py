@@ -599,7 +599,7 @@ def tta_inference(predictor: SamPredictor, image_tensor: torch.Tensor, gt_mask_n
         tta.VerticalFlip(), # Optional
         tta.Rotate90(angles=[0, 90, 180, 270]), # Optional
         # tta.Scale(scales=[0.8, 1, 1.2]), # Use cautiously with SAM's fixed embed size
-        tta.Multiply(factors=[0.9, 1, 1.1]), # Intensity changes
+        # tta.Multiply(factors=[0.9, 1, 1.1]), # Intensity changes
     ])
 
     tta_predictions_prob = []

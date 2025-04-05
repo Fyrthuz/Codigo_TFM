@@ -47,7 +47,7 @@ mc_dropout:
   p: 0.01
 
 subset:
-  subset_size: 50  # Process only the first 5 samples from the dataset
+  subset_size: 400  # Process only the first 5 samples from the dataset
 
 certainty_refinement:
   enabled: True

@@ -516,6 +516,10 @@ def tta_inference(model: universeg, image_tensor: torch.Tensor, support_images: 
                  support_masks: torch.Tensor, device: str, activation: str = "sigmoid"):
     transforms = tta.Compose([
         tta.HorizontalFlip(),
+        tta.VerticalFlip(), # Optional
+        tta.Rotate90(angles=[0, 90, 180, 270]), # Optional
+        # tta.Scale(scales=[0.8, 1, 1.2]), # Use cautiously with SAM's fixed embed size
+        tta.Multiply(factors=[0.9, 1, 1.1]), # Intensity changes
     ])
 
     tta_predictions_prob = []

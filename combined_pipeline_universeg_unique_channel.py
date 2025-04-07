@@ -722,7 +722,7 @@ if __name__ == "__main__":
     support_images, support_masks = [], []
     for idx, (img_path, mask_path) in enumerate(context_set):
         # Load image and mask
-        image_pil = PIL.Image.open(img_path).convert("L")  # UniVerSeg requires Gray image
+        image_pil = PIL.Image.open(img_path).convert("RGB")  # UniVerSeg requires Gray image
         gt_mask_pil = PIL.Image.open(mask_path).convert("L")
 
         transform = torchvision.transforms.Compose([
@@ -731,7 +731,8 @@ if __name__ == "__main__":
         ])
 
         # Process image (already shape (1, H, W) after ToTensor)
-        image_tensor = transform(image_pil).to(device)  # (1, H, W)
+        image_tensor = transform(image_pil).to(device)  # (C, H, W)
+        image_tensor = image_tensor[1,:,:].unsqueeze(0)  # (1, H, W)
         support_images.append(image_tensor.unsqueeze(0).unsqueeze(0))  # Add batch dim -> (1, 1, H, W)
 
         # Process mask (ensure same shape)
@@ -755,7 +756,7 @@ if __name__ == "__main__":
         print(f"\n--- Processing Sample {idx+1}/{len(pairs)}: {os.path.basename(img_path)} ---")
         try:
             # Load image and mask
-            image_pil = PIL.Image.open(img_path).convert("L") # UniVerSeg requires Gray image
+            image_pil = PIL.Image.open(img_path).convert("RGB") # UniVerSeg requires Gray image
             gt_mask_pil = PIL.Image.open(mask_path).convert("L")
             gt_mask_np = np.array(gt_mask_pil) > 0.5
 
@@ -766,7 +767,8 @@ if __name__ == "__main__":
                 torchvision.transforms.Resize((128, 128), interpolation=torchvision.transforms.InterpolationMode.NEAREST),
                 # Add any other minimal preprocessing if needed, but avoid resizing here
             ])
-            image_tensor = transform(image_pil).unsqueeze(0).to(device) # Add batch dim, send to device
+            image_tensor = transform(image_pil).to(device) # Add batch dim, send to device
+            image_tensor = image_tensor[1,:,:].unsqueeze(0).unsqueeze(0)  # (1, H, W)
             gt_mask_tensor = transform(gt_mask_pil) # No batch dim needed, keep on CPU usually
             gt_mask_np = gt_mask_tensor.cpu().numpy().squeeze() # Squeeze channel dim if present
             gt_mask_np = (gt_mask_np > 0.5).astype(np.uint8) # Ensure binary 0/1 numpy

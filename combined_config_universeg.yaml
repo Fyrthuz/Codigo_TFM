@@ -41,7 +41,7 @@ crf:
   epsilon: 1e-8
 
 noisy:
-  noise_std: 0.2
+  noise_std: 0.1
 
 mc_dropout:
   p: 0.01

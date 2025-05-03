@@ -644,7 +644,7 @@ def save_outputs(images, masks, mean_prediction, uncertainty, mask_prediction, m
 
 
 # [certainty_score function remains unchanged]
-def certainty_score(uncertainty_map, ground_truth):
+def certainty_score(uncertainty_map, ground_truth, num_classes=2):
     uncertainty_map = np.squeeze(np.asarray(uncertainty_map))
     ground_truth = np.squeeze(np.asarray(ground_truth))
     # Ensure GT is boolean/binary
@@ -653,16 +653,12 @@ def certainty_score(uncertainty_map, ground_truth):
     if np.count_nonzero(ground_truth) == 0:
         return np.nan # Avoid division by zero if GT mask is empty
 
-    # Lower uncertainty means higher certainty
-    certainty_map = 1.0 - uncertainty_map # Convert uncertainty to certainty
-    # Clamp certainty to [0, 1] just in case
-    certainty_map = np.clip(certainty_map, 0.0, 1.0)
+    max_entropy = np.log(num_classes)  # natural log
+    normalized_certainty = 1.0 - (uncertainty_map / max_entropy)
+    normalized_certainty = np.clip(normalized_certainty, 0.0, 1.0)
 
-    certainty_in_gt = certainty_map[ground_truth]
-
-    # Return the average certainty within the ground truth region
+    certainty_in_gt = normalized_certainty[ground_truth]
     return np.mean(certainty_in_gt)
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Segmentation pipeline with YAML configuration and metrics")

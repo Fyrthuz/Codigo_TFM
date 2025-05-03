@@ -2,12 +2,12 @@
 #------------------------------------------------------
 # Example SLURM job script with SBATCH requesting GPUs
 #------------------------------------------------------
-#SBATCH -J Unet            # Job name
-#SBATCH -o Unet_%j.o       # Name of stdout output file(%j expands to jobId)
-#SBATCH -e Unet_%j.e       # Name of stderr output file(%j expands to jobId)
+#SBATCH -J universeg            # Job name
+#SBATCH -o universeg_%j.o       # Name of stdout output file(%j expands to jobId)
+#SBATCH -e universeg_%j.e       # Name of stderr output file(%j expands to jobId)
 #SBATCH --gres=gpu:a100:1   # Request 1 GPU of 2 available on an average A100 node
 #SBATCH -c 32               # Cores per task requested
-#SBATCH -t 01:30:00         # Run time (hh:mm:ss) - 10 min
+#SBATCH -t 00:30:00         # Run time (hh:mm:ss) - 10 min
 #SBATCH --mem-per-cpu=3G    # Memory per core demandes (96 GB = 3GB * 32 cores)
 
 module load cesga/system miniconda3/22.11.1-1
@@ -17,6 +17,6 @@ conda activate TFM_final
 conda deactivate
 conda activate TFM_final
 # cd /mnt/netapp2/Store_uni/home/usc/ci/fgs/git_repo/Codigo_TFG
-srun python combined_pipeline_own_model.py combined_config.yaml
+srun python combined_pipeline_universeg_unique_channel.py combined_config_universeg.yaml
 # srun python see_med_sam_architecture.py
 echo "done"                 # Write this message on the output file when finished

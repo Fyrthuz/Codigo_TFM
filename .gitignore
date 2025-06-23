@@ -3,6 +3,7 @@ IPSeg/
 **/*.tar.gz
 **/*.jpg
 **/*.png
+!**car.png
 **/*.jpeg
 carvana/train_images/
 **/*.tiff

@@ -164,7 +164,7 @@ if __name__ == '__main__':
     import matplotlib.pyplot as plt
 
     # Load an image and convert to a tensor.
-    image_pil = Image.open("data/car.png").convert("RGB")
+    image_pil = Image.open("car.png").convert("RGB")
     image = T.ToTensor()(image_pil)  # Shape: (C, H, W)
     
     # Create an instance of the transformer using a padding mode that fills empty areas

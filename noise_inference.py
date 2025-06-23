@@ -72,7 +72,7 @@ if __name__ == '__main__':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load an image and convert to a tensor.
-    image_pil = Image.open("data/car.png").convert("RGB")
+    image_pil = Image.open("car.png").convert("RGB")
     image = T.ToTensor()(image_pil).unsqueeze(0).to(device)  # Shape: (1, C, H, W)
 
     plt.imshow(image_pil)

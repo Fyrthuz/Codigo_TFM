@@ -106,7 +106,7 @@ if __name__ == "__main__":
     model.load_state_dict(torch.load("models/unet/last.pt", map_location=device))
 
     # Load a test image
-    image = PIL.Image.open("data/car.png").convert("RGB")
+    image = PIL.Image.open("car.png").convert("RGB")
     image = torchvision.transforms.ToTensor()(image).unsqueeze(0).to(device)
 
     # Normal Inference

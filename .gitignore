@@ -1,17 +1,51 @@
+# Environments / data / downloads
+.venv/
 IPSeg/
 **/*.zip
 **/*.tar.gz
 **/*.jpg
-**/*.png
-!**car.png
 **/*.jpeg
-carvana/train_images/
 **/*.tiff
 **/*ubyte
 **/*.csv
 **/*.npy
 **/*.npz
 **/*.gz
-**/*.pyc
 **/*.tif
+
+# Images (keep specific ones)
+results/**/*.png
+archive/**/*.png
+
+# Checkpoints
+*.pth
+*.pt
 medsam_vit_b.pth
+
+# Logs
+training_log.txt
+*.log
+nohup.out
+
+# Directories (not tracked)
+data/
+MRI/
+archive/
+results/
+results_*/
+__pycache__/
+.pytest_cache/
+**/*.egg-info/
+**/.eggs/
+**/__pycache__/
+**/*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

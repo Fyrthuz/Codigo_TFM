@@ -1,0 +1,56 @@
+paths:
+  save_path: "./results"
+  root_path: "./MRI/filtered_data"
+
+directories:
+  - "mc_dropout"
+  - "tta"
+  - "noisy"
+  - "base"
+  - "refined"
+  - "original"
+
+inference:
+  num_samples: 10
+  num_classes: 2
+  activation: "sigmoid"
+  batch_size: 1
+
+model:
+  name: "unet"
+  in_channels: 3
+  out_channels: 1
+  init_features: 32
+  pretrained: false
+
+fusion:
+  weighting_method: "inverse"
+  beta: 1.0
+  alpha: 1.0
+  threshold_method: "naive"
+  percentile: 50
+  k: 0.5
+  epsilon: 1.0e-6
+
+crf:
+  sdims: [5, 5]
+  schan: [5, 5, 5]
+  n_iters: 5
+  epsilon: 1.0e-8
+
+noisy:
+  noise_std: 0.01
+
+mc_dropout:
+  p: 0.01
+
+subset:
+  subset_size:
+
+certainty_refinement:
+  enabled: true
+  alpha: 0.6
+  threshold: 0.5
+
+uncertainty_metric:
+  threshold: 0.5

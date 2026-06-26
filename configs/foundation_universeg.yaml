@@ -1,0 +1,37 @@
+paths:
+  save_path: "./results_foundation_universeg"
+  root_path: "./MRI/filtered_data"
+
+inference:
+  num_samples: 10
+  num_classes: 2
+  activation: "sigmoid"
+  batch_size: 1
+
+fusion:
+  weighting_method: "inverse"
+  beta: 1.0
+  alpha: 1.0
+  threshold_method: "naive"
+  percentile: 50
+  k: 0.5
+  epsilon: 1.0e-6
+
+crf:
+  sdims: [5, 5]
+  schan: [5, 5, 5]
+  n_iters: 5
+  epsilon: 1.0e-8
+
+noisy:
+  noise_std: 0.1
+
+mc_dropout:
+  p: 0.01
+
+subset:
+  subset_size:
+  size_context_set: 64
+
+uncertainty_metric:
+  threshold: 0.5

@@ -246,10 +246,10 @@ python -m pytest tests/ -v    # 53 passed, 2 skipped (pydensecrf)
 ## Citation
 
 ```bibtex
-@mastersthesis{GonzalezSalas2024,
+@mastersthesis{GonzalezSalas2025,
   author  = {Fernando González Salas},
   title   = {Medical Image Segmentation with Uncertainty Estimation},
-  school  = {Universidade da Coruña},
-  year    = {2024}
+  school  = {Universidade de Santiago de Compostela},
+  year    = {2025}
 }
 ```

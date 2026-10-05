@@ -26,6 +26,41 @@ def compute_dice(pred, target, threshold: float = 0.5) -> float:
     return (2 * intersection) / (pred_sum + target_sum)
 
 
+def classwise_ece(prob_flat, gt_flat, n_bins: int = 10) -> float:
+    """Class-averaged Expected Calibration Error for binary segmentation.
+
+    For each class c the class score s = P(y=c|x) is binned and the average
+    score is compared against the empirical frequency of class c in that bin:
+
+        ECE_c = sum_b (|B_b| / N) * |freq_c(B_b) - mean_score_c(B_b)|
+
+    The final score averages ECE over both classes. Compared to the naive
+    "bin accuracy (prediction == gt) vs mean probability" definition, this
+    does not reward correctly predicted background pixels (which have
+    near-zero foreground probability) with a ~1.0 error term, so it is not
+    dominated by the huge background class and is meaningful for the
+    strongly imbalanced foreground/background setting of lesion segmentation.
+    """
+    n = max(int(prob_flat.size), 1)
+    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
+    ece_total = 0.0
+    for cls in (0, 1):
+        scores = prob_flat if cls == 1 else 1.0 - prob_flat
+        correct = (gt_flat == cls).astype(np.float64)
+        bin_indices = np.digitize(scores, bin_edges, right=True)
+        ece_cls = 0.0
+        for b in range(1, n_bins + 1):
+            mask = bin_indices == b
+            bin_size = int(np.sum(mask))
+            if bin_size == 0:
+                continue
+            conf = float(np.mean(scores[mask]))
+            freq = float(np.mean(correct[mask]))
+            ece_cls += abs(freq - conf) * bin_size
+        ece_total += ece_cls / n
+    return ece_total / 2.0
+
+
 def compute_metrics(prob, gt_mask, epsilon: float = 1e-8):
     # Remove leading singleton dimensions
     while prob.ndim > gt_mask.ndim and prob.shape[0] == 1:
@@ -39,9 +74,17 @@ def compute_metrics(prob, gt_mask, epsilon: float = 1e-8):
     prob_flat = np.clip(prob_flat, epsilon, 1 - epsilon)
     prob_flat = np.nan_to_num(prob_flat, nan=0.5)
 
+    # Negative log-likelihood over all pixels...
     nll = -np.mean(
         gt_flat * np.log(prob_flat) + (1 - gt_flat) * np.log(1 - prob_flat)
     )
+    # ...and restricted to foreground pixels, which is not dominated by
+    # the (easy) background class and is the clinically relevant region.
+    fg_pixels = gt_flat == 1
+    if np.any(fg_pixels):
+        nll_fg = float(-np.mean(np.log(prob_flat[fg_pixels])))
+    else:
+        nll_fg = float("nan")
 
     brier = np.mean((prob_flat - gt_flat) ** 2)
 
@@ -56,21 +99,11 @@ def compute_metrics(prob, gt_mask, epsilon: float = 1e-8):
     precision = tp / (tp + fp + epsilon)
     recall = tp / (tp + fn + epsilon)
 
-    bin_edges = np.linspace(0, 1, 11)
-    bin_indices = np.digitize(prob_flat, bin_edges, right=True)
-    ece = 0.0
-    for i in range(1, 11):
-        mask = bin_indices == i
-        bin_size = np.sum(mask)
-        if bin_size == 0:
-            continue
-        conf = np.mean(prob_flat[mask])
-        acc = np.mean((pred_mask[mask] == gt_flat[mask]).astype(float))
-        ece += np.abs(acc - conf) * bin_size
-    ece /= len(prob_flat)
+    ece = classwise_ece(prob_flat, gt_flat)
 
     return {
         "nll": nll,
+        "nll_fg": nll_fg,
         "ece": ece,
         "brier": brier,
         "accuracy": accuracy,

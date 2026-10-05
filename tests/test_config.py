@@ -1,19 +1,21 @@
 import os
 import tempfile
-import yaml
-import pytest
 
-from src.config import PipelineConfig, InferenceConfig, ModelConfig, FusionConfig
+import yaml
+
+from src.config import PipelineConfig
 
 
 class TestPipelineConfig:
     def test_default_values(self):
         config = PipelineConfig()
-        assert config.inference.num_samples == 10
+        assert config.inference.num_samples == 30
         assert config.inference.activation == "sigmoid"
         assert config.model.in_channels == 3
         assert config.mc_dropout.p == 0.01
         assert config.noisy.noise_std == 0.01
+        assert config.crf.n_iters == 3
+        assert config.crf.w_g == 0.5 and config.crf.w_b == 1.0
 
     def test_from_yaml(self):
         data = {

@@ -1,7 +1,8 @@
 import os
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 
 
 def save_image(array, path):
@@ -47,13 +48,19 @@ def save_image(array, path):
     img.save(path)
 
 
+def _grid_shape(n_items, ncols=3):
+    """Rows x cols for a subplot grid that fits n_items panels."""
+    return int(np.ceil(n_items / ncols)), ncols
+
+
 def plot_metrics_comparison(
     mean_results, methods, metrics, save_path,
     filename="metrics_summary.png",
 ):
-    plt.figure(figsize=(15, 10))
+    nrows, ncols = _grid_shape(len(metrics))
+    plt.figure(figsize=(5 * ncols, 3.5 * nrows))
     for i, metric in enumerate(metrics):
-        plt.subplot(3, 3, i + 1)
+        plt.subplot(nrows, ncols, i + 1)
         plt.title(metric)
         values = [mean_results[method].get(metric, np.nan) for method in methods]
         plt.bar(methods, values)
@@ -68,9 +75,10 @@ def plot_enhanced_comparison(
     filename="enhanced_metrics_comparison.png",
 ):
     colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
-    plt.figure(figsize=(18, 12))
+    nrows, ncols = _grid_shape(len(metrics))
+    plt.figure(figsize=(6 * ncols, 4 * nrows))
     for i, metric in enumerate(metrics):
-        plt.subplot(3, 3, i + 1)
+        plt.subplot(nrows, ncols, i + 1)
         values = [mean_results[method].get(metric, np.nan) for method in methods]
         clean_vals = [v for v in values if not (np.isnan(v) if isinstance(v, float) else False)]
         bars = plt.bar(methods, values, color=colors)
@@ -101,9 +109,10 @@ def plot_box_comparison(
     filename="box_plot_comparison.png",
 ):
     colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
-    plt.figure(figsize=(18, 12))
+    nrows, ncols = _grid_shape(len(metrics))
+    plt.figure(figsize=(6 * ncols, 4 * nrows))
     for i, metric in enumerate(metrics):
-        plt.subplot(3, 3, i + 1)
+        plt.subplot(nrows, ncols, i + 1)
         data = []
         for method in methods:
             values = [
@@ -111,6 +120,7 @@ def plot_box_comparison(
                 for sample_data in overall_metrics.values()
                 if method in sample_data
             ]
+            values = [v for v in values if v is not None and np.isfinite(v)]
             data.append(values)
         box = plt.boxplot(data, patch_artist=True, tick_labels=methods)
         for patch, color in zip(box["boxes"], colors):
@@ -131,3 +141,29 @@ def plot_box_comparison(
 def save_metrics_csv(mean_results, methods, metrics, save_path, filename="metrics_summary.csv"):
     df = pd.DataFrame.from_dict(mean_results, orient="index")
     df.to_csv(os.path.join(save_path, filename))
+
+
+def save_detailed_metrics_csv(overall_metrics, methods, metrics, save_path,
+                              filename="detailed_metrics.csv"):
+    """Per-sample metrics in long format (sample, method, metric, value).
+
+    Aggregates (metrics_summary.csv) alone made it impossible to run
+    paired statistical tests; this table keeps every sample so effects
+    like "Fusion vs Normal" can be tested with Wilcoxon/bootstrap at the
+    patient level.
+    """
+    rows = []
+    for sample_name, sample_data in overall_metrics.items():
+        for method in methods:
+            if method not in sample_data:
+                continue
+            for metric in metrics:
+                value = sample_data[method].get(metric, np.nan)
+                rows.append({
+                    "sample": sample_name,
+                    "method": method,
+                    "metric": metric,
+                    "value": value,
+                })
+    df = pd.DataFrame(rows)
+    df.to_csv(os.path.join(save_path, filename), index=False)

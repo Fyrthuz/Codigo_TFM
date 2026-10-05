@@ -1,12 +1,12 @@
-import yaml
-import os
 from dataclasses import dataclass, field
 from typing import Optional
+
+import yaml
 
 
 @dataclass
 class InferenceConfig:
-    num_samples: int = 10
+    num_samples: int = 30
     num_classes: int = 2
     activation: str = "sigmoid"
     batch_size: int = 1
@@ -34,10 +34,12 @@ class FusionConfig:
 
 @dataclass
 class CRFConfig:
-    sdims: tuple = (5, 5)
-    schan: tuple = (5, 5, 5)
-    n_iters: int = 5
+    sdims: tuple = (2, 3)
+    schan: tuple = (0.15,)
+    n_iters: int = 3
     epsilon: float = 1e-8
+    w_g: float = 0.5
+    w_b: float = 1.0
 
 
 @dataclass

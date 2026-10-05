@@ -3,7 +3,7 @@ paths:
   root_path: "./MRI/filtered_data"
 
 inference:
-  num_samples: 10
+  num_samples: 30
   num_classes: 2
   activation: "sigmoid"
   batch_size: 1
@@ -18,10 +18,12 @@ fusion:
   epsilon: 1.0e-6
 
 crf:
-  sdims: [5, 5]
-  schan: [5, 5, 5]
-  n_iters: 5
+  sdims: [2, 3]
+  schan: [0.15]
+  n_iters: 3
   epsilon: 1.0e-8
+  w_g: 0.5
+  w_b: 1.0
 
 noisy:
   noise_std: 0.1

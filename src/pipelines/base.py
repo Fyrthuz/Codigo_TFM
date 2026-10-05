@@ -1,30 +1,34 @@
 import os
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Tuple
 
 import numpy as np
 import torch
 from tqdm import tqdm
 
 from src.config import PipelineConfig
-from src.utils.metrics import compute_iou, compute_dice, compute_metrics, certainty_score
-from src.utils.fusion import weighted_average_with_uncertainty
+from src.uncertainty.mc_dropout import MCDropout, mc_dropout_inference
+from src.uncertainty.noise_inference import NoisyInference, noisy_inference
+from src.uncertainty.tta import tta_inference
 from src.utils.crf import refine_with_crf_uncertainty
+from src.utils.fusion import weighted_average_with_uncertainty
+from src.utils.metrics import certainty_score, compute_dice, compute_iou, compute_metrics
 from src.utils.visualization import (
-    save_image,
-    plot_metrics_comparison,
-    plot_enhanced_comparison,
     plot_box_comparison,
+    plot_enhanced_comparison,
+    plot_metrics_comparison,
+    save_detailed_metrics_csv,
+    save_image,
     save_metrics_csv,
 )
-from src.uncertainty.mc_dropout import MCDropout, mc_dropout_inference
-from src.uncertainty.tta import tta_inference
-from src.uncertainty.noise_inference import NoisyInference, noisy_inference
 
 
 class BaseSegmentationPipeline(ABC):
     METHODS = ["normal", "mc_dropout", "tta", "noisy", "fusion", "crf"]
-    METRICS = ["iou", "dice", "nll", "ece", "brier", "accuracy", "precision", "recall", "certainty"]
+    METRICS = ["iou", "dice", "nll", "nll_fg", "ece", "brier", "accuracy", "precision", "recall", "certainty"]
+    # Models with a fixed internal input size (e.g. UniVerSeg -> 128x128) must
+    # use size-preserving TTA transforms; ttach's Scale breaks there.
+    TTA_RESIZE_SAFE = False
 
     def __init__(self, config: PipelineConfig):
         self.config = config
@@ -93,10 +97,11 @@ class BaseSegmentationPipeline(ABC):
             "metrics": {"iou": iou, "dice": dice, "certainty": cert, **metrics},
         }
 
-    def run_tta(self, image_tensor: torch.Tensor, gt_mask: np.ndarray, config_inference):
+    def run_tta(self, image_tensor, gt_mask, config_inference):
         tta_images, tta_masks, tta_mean_prediction, tta_entropy = tta_inference(
             model=self.model, image=image_tensor, device=str(self.device),
             activation=config_inference.activation,
+            resize_safe=self.TTA_RESIZE_SAFE,
         )
         tta_mask_pred = (tta_mean_prediction > 0.5).astype(np.uint8)
         iou = compute_iou(tta_mask_pred, gt_mask)
@@ -169,6 +174,8 @@ class BaseSegmentationPipeline(ABC):
                 schan=config_crf.schan,
                 n_iters=config_crf.n_iters,
                 epsilon=config_crf.epsilon,
+                w_g=getattr(config_crf, "w_g", 0.5),
+                w_b=getattr(config_crf, "w_b", 1.0),
             )
         except ImportError:
             print("  pydensecrf not installed — skipping CRF refinement")
@@ -306,10 +313,11 @@ class BaseSegmentationPipeline(ABC):
         for method in active_methods:
             mean_results[method] = {}
             for metric in active_metrics:
-                vals = aggregated[method][metric]
+                vals = [v for v in aggregated[method][metric] if np.isfinite(v)]
                 mean_results[method][metric] = float(np.mean(vals)) if vals else 0.0
 
         save_metrics_csv(mean_results, active_methods, active_metrics, viz_dir)
+        save_detailed_metrics_csv(self.overall_metrics, active_methods, active_metrics, viz_dir)
         plot_metrics_comparison(mean_results, active_methods, active_metrics, viz_dir)
         plot_enhanced_comparison(mean_results, active_methods, active_metrics, viz_dir)
         plot_box_comparison(self.overall_metrics, active_methods, active_metrics, viz_dir)

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from src.utils.metrics import compute_iou, compute_dice, compute_metrics, certainty_score
+from src.utils.metrics import certainty_score, compute_dice, compute_iou, compute_metrics
 
 
 class TestComputeIoU:
@@ -57,6 +57,7 @@ class TestComputeMetrics:
         gt = np.ones((10, 10))
         metrics = compute_metrics(prob, gt)
         assert metrics["nll"] == pytest.approx(0.0, abs=1e-4)
+        assert metrics["nll_fg"] == pytest.approx(0.0, abs=1e-4)
         assert metrics["brier"] == pytest.approx(0.0, abs=1e-4)
         assert metrics["accuracy"] == pytest.approx(1.0, abs=1e-4)
         assert metrics["precision"] == pytest.approx(1.0, abs=1e-4)
@@ -85,6 +86,43 @@ class TestComputeMetrics:
         gt = np.ones((10, 10))
         metrics = compute_metrics(prob, gt)
         assert np.isfinite(metrics["nll"])
+
+
+class TestClasswiseECE:
+    def test_background_heavy_calibrated_is_small(self):
+        # A well-calibrated map on a strongly imbalanced image: 98% of
+        # pixels are background with p_fg = 0.02 and 2% are foreground
+        # with p_fg = 0.9. The naive ECE (bin accuracy vs mean prob)
+        # inflates to ~1.0 here because correctly predicted background
+        # pixels count as "accuracy 1" against "confidence 0.02".
+        prob = np.full((100, 10), 0.02)
+        gt = np.zeros((100, 10))
+        prob[-2:, :] = 0.9
+        gt[-2:, :] = 1
+        metrics = compute_metrics(prob, gt)
+        assert metrics["ece"] < 0.05
+
+    def test_overconfident_wrong_is_large(self):
+        prob = np.full((10, 10), 0.99)
+        gt = np.zeros((10, 10))
+        metrics = compute_metrics(prob, gt)
+        assert metrics["ece"] > 0.5
+
+
+class TestForegroundNLL:
+    def test_foreground_only_nll(self):
+        prob = np.zeros((10, 10))
+        prob[:2, :] = 0.5
+        gt = np.zeros((10, 10))
+        gt[:2, :] = 1
+        metrics = compute_metrics(prob, gt)
+        assert metrics["nll_fg"] == pytest.approx(-np.log(0.5), abs=1e-3)
+
+    def test_nll_fg_nan_without_foreground(self):
+        prob = np.zeros((10, 10))
+        gt = np.zeros((10, 10))
+        metrics = compute_metrics(prob, gt)
+        assert np.isnan(metrics["nll_fg"])
 
 
 class TestCertaintyScore:

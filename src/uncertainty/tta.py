@@ -1,7 +1,8 @@
 import math
+
+import numpy as np
 import torch
 import torch.nn.functional as F
-import numpy as np
 
 
 class RandomImageTransformer:
@@ -116,27 +117,95 @@ class RandomImageTransformer:
 import random
 
 
-def tta_inference(model, image, device: str, activation: str = "sigmoid"):
-    import ttach as tta_lib
-    import torch.nn.functional as F
-    import numpy as np
+def _resize_safe_combinations():
+    """Size- and orientation-preserving test-time transforms.
 
-    transforms = tta_lib.Compose([
-        tta_lib.HorizontalFlip(),
-        tta_lib.Scale(scales=[0.5, 1, 2]),
-        tta_lib.Multiply(factors=[0.8, 0.9, 1, 1.1, 1.2]),
-    ])
+    Two constraints apply to models with a fixed internal input size
+    (e.g. UniVerSeg resizes everything to 128x128):
+
+    1. Size-preserving: ttach's Scale transforms break there, because
+       deaugmentation assumes the model output has the same size as the
+       augmented input; with internal resizing the deaugmented masks come
+       back as a mixture of sizes (256/128/64 for 256x256 inputs) and
+       ``torch.stack`` fails — the original "TTA no disponible" issue.
+    2. Orientation-preserving: for in-context models with a fixed support
+       set, flipping only the query breaks query-support matching
+       (measured on LGG: flip-averaged TTA drops support Dice from 0.94
+       to 0.14). Flipping query AND support together reproduces the
+       original prediction exactly (Dice 0.97 against itself) and adds no
+       diversity, so only photometric transforms yield valid, diverse
+       predictions for such models.
+    """
+    def _mul(x, f):
+        return x * f
+
+    def _gamma(x, g):
+        return torch.clamp(x, 1e-6, 1.0) ** g
+
+    def _bias(x, b):
+        return x + b
+
+    def _contrast(x, c):
+        return (x - 0.5) * c + 0.5
+
+    return [
+        ("identity", lambda x: x),
+        ("mul_x0.9", lambda x: _mul(x, 0.9)),
+        ("mul_x1.1", lambda x: _mul(x, 1.1)),
+        ("gamma_0.85", lambda x: _gamma(x, 0.85)),
+        ("gamma_1.15", lambda x: _gamma(x, 1.15)),
+        ("bias_-0.03", lambda x: _bias(x, -0.03)),
+        ("bias_+0.03", lambda x: _bias(x, 0.03)),
+        ("contrast_x0.9", lambda x: _contrast(x, 0.9)),
+        ("contrast_x1.1", lambda x: _contrast(x, 1.1)),
+    ]
+
+
+_RESIZE_SAFE_COMBOS = _resize_safe_combinations()
+
+
+def tta_inference(model, image, device: str, activation: str = "sigmoid", resize_safe: bool = False):
+    """Test-Time Augmentation inference.
+
+    Args:
+        model: segmentation model. Must accept (1, C, H, W) tensors.
+        image: (1, C, H, W) input tensor.
+        device: device string (kept for API compatibility).
+        activation: "sigmoid" (binary) or "softmax" (multi-class).
+        resize_safe: use only size- and orientation-preserving photometric
+            transforms (required for models with a fixed internal input
+            size and/or a fixed in-context support set, where ttach's
+            Scale/Flip transforms are incompatible — see
+            ``_resize_safe_combinations``).
+    """
+    import torch.nn.functional as F
 
     tta_predictions = []
     augmented_images = []
 
-    with torch.no_grad():
-        for transform in transforms:
-            augmented_image = transform.augment_image(image)
-            augmented_images.append(augmented_image.cpu().numpy())
-            output = model(augmented_image)
-            output = transform.deaugment_mask(output)
-            tta_predictions.append(output)
+    if resize_safe:
+        with torch.no_grad():
+            for _name, transform in _RESIZE_SAFE_COMBOS:
+                augmented_image = torch.clamp(transform(image), 0.0, 1.0)
+                augmented_images.append(augmented_image.cpu().numpy())
+                output = model(augmented_image)
+                tta_predictions.append(output)
+    else:
+        import ttach as tta_lib
+
+        transforms = tta_lib.Compose([
+            tta_lib.HorizontalFlip(),
+            tta_lib.Scale(scales=[0.5, 1, 2]),
+            tta_lib.Multiply(factors=[0.8, 0.9, 1, 1.1, 1.2]),
+        ])
+
+        with torch.no_grad():
+            for transform in transforms:
+                augmented_image = transform.augment_image(image)
+                augmented_images.append(augmented_image.cpu().numpy())
+                output = model(augmented_image)
+                output = transform.deaugment_mask(output)
+                tta_predictions.append(output)
 
     tta_predictions = torch.stack(tta_predictions)
 

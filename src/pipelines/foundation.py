@@ -1,21 +1,21 @@
 import os
-from typing import Tuple, Dict
+from typing import Dict, Tuple
 
 import numpy as np
 import torch
 from tqdm import tqdm
 
 from src.config import PipelineConfig
-from src.pipelines.base import BaseSegmentationPipeline
 from src.models.foundation import FoundationModel
-from src.utils.metrics import compute_iou, compute_dice, compute_metrics, certainty_score
+from src.pipelines.base import BaseSegmentationPipeline
+from src.utils.metrics import certainty_score, compute_dice, compute_iou, compute_metrics
 from src.utils.visualization import save_image
 
 
 def load_g_channel_tensor(img_path, repeat=3):
     """Load image and extract the G channel (T1c - contrast-enhanced)."""
-    from PIL import Image
     import torchvision
+    from PIL import Image
     img = Image.open(img_path).convert("RGB")
     tensor = torchvision.transforms.ToTensor()(img)
     g = tensor[1:2]
@@ -24,6 +24,10 @@ def load_g_channel_tensor(img_path, repeat=3):
 
 class FoundationPipeline(BaseSegmentationPipeline):
     """Pipeline for UniVerSeg few-shot segmentation with full uncertainty support."""
+
+    # UniVerSeg always resizes inputs to 128x128 internally, so TTA must
+    # avoid ttach's size-changing transforms (see src/uncertainty/tta.py).
+    TTA_RESIZE_SAFE = True
 
     def __init__(
         self,
@@ -54,8 +58,8 @@ class FoundationPipeline(BaseSegmentationPipeline):
             return image, mask
 
         img_path, mask_path = self._pairs[idx]
-        from PIL import Image
         import torchvision
+        from PIL import Image
         image = Image.open(img_path).convert("RGB")
         image_tensor = torchvision.transforms.ToTensor()(image).unsqueeze(0).to(self.device)
         gt_mask = torchvision.transforms.ToTensor()(Image.open(mask_path)).cpu().numpy().squeeze()
@@ -169,8 +173,8 @@ class FoundationPipeline(BaseSegmentationPipeline):
 
         for idx in tqdm(range(n), desc=f"Processing {label} samples"):
             img_path, mask_path = pairs[idx]
-            from PIL import Image
             import torchvision
+            from PIL import Image
             image_tensor = load_g_channel_tensor(img_path).unsqueeze(0).to(self.device)
             gt_mask = torchvision.transforms.ToTensor()(Image.open(mask_path)).cpu().numpy().squeeze()
 

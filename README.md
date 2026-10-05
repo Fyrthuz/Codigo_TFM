@@ -7,13 +7,17 @@ Master's Thesis comparing **UNet** and **UniVerSeg** with **uncertainty quantifi
 
 ---
 
+## Contents
+
+[Features](#features) · [Dataset](#dataset) · [Quick Start](#quick-start) · [Uncertainty Methods](#uncertainty-methods) · [Results](#results) · [Statistical Analysis](#statistical-analysis) · [4% Protocol](#4-protocol-thesis-reproduction) · [Ablation Studies](#ablation-studies) · [Output Structure](#output-structure) · [Project Structure](#project-structure) · [Tests](#tests) · [Requirements](#requirements) · [Citation](#citation)
+
 ## Features
 
 - **UNet 2D** — trained from scratch (60 epochs, augmentation, early stopping)
 - **UniVerSeg few-shot** — zero-shot with configurable context size (1–128 images)
 - **Uncertainty methods** — MC Dropout, TTA, Noisy, Fusion, CRF
 - **Pure numpy/OpenCV CRF** — no compilation needed
-- **Patient-level split** — 70/15/15 over 108 patients, ~160 test images
+- **Patient-level split** — 70/15/15 over 108 patients, 144 imágenes de test
 
 ## Dataset
 
@@ -41,6 +45,21 @@ python -m src.pipelines.run_unet --config configs/pipeline_2d.yaml --checkpoint 
 # UniVerSeg: few-shot
 python -m src.pipelines.run_foundation --config configs/foundation_universeg.yaml --context-size 64
 ```
+
+## Uncertainty Methods
+
+| Method | Description | UNet | UniVerSeg |
+|--------|-------------|:----:|:---------:|
+| **Normal** | Single forward pass | ✓ | ✓ |
+| **MC Dropout** | 30 passes with random dropout (p=0.01) on all layers | ✓ | ✓ |
+| **TTA** | UNet: flip + scales + intensity (30 combinations) + average. UniVerSeg: 9 photometric transforms (identity, intensity ×, gamma, contrast, bias) | ✓ | ✓† |
+| **Noisy** | 30 passes with Gaussian noise (σ=0.01 UNet / 0.1 UniVerSeg) added to input | ✓ | ✓ |
+| **Fusion** | Uncertainty-weighted average of MC+TTA+Noisy (inverse weighting) | ✓ | ✓ |
+| **CRF** | Dense CRF refinement (numpy/OpenCV, edge-stopped kernels, 3 iterations) | ✓ | ✓ |
+
+> † UniVerSeg TTA uses size- and orientation-preserving photometric transforms only: ttach's Scale breaks on models with internal resizing (deaugmented masks come back as mixed sizes 256/128/64 → stack error), and flips are invalid for in-context models with a fixed support set (they break query-support matching: flip-averaged TTA drops support Dice from 0.94 to 0.14).
+
+> **CRF implementation**: pure numpy/OpenCV (Krähenbühl & Koltun 2012, mean-field) — Gaussian + bilateral kernels in log-space, edge-stopped; falls back to Gaussian-only if OpenCV is unavailable. For pydensecrf (Python ≤3.11): `pip install pydensecrf`.
 
 ## Results
 
@@ -190,17 +209,19 @@ python -m src.utils.statistics --pipeline foundation --foundation-results-dir ./
 - ✅ **UniVerSeg alcanza 0.89 en test (medianas 0.91)** — dentro del rango "~0.80–0.90" del PDF — y llega al **96% del rendimiento del UNet entrenado** (frente al 85% en el protocolo del 1%): sin entrenamiento, la afirmación "competitivo con el UNet" se sostiene en este protocolo.
 - ✅ **TTA/Noisy/Fusión mejoran la calibración de UniVerSeg** (NLL 0.071 → 0.048–0.055, Brier 0.0135 → 0.0126) sin sacrificar solapamiento (Dice +0.009/+0.010), como afirmaba la memoria.
 - **"UniVerSeg, mejor modelo de los tres"**: la afirmación de la memoria se refiere a la comparación con **MedSAM** (modelos fundacionales, sin entrenamiento), no con el UNet entrenado; MedSAM no se evalúa en este repositorio.
-- ❌ **"CRF degrada la calibración"**: era un bug de implementación (ver *CRF Refinement*); corregido, en este protocolo es significativamente positivo (+0.0007, p=0.044).
+- ❌ **"CRF degrada la calibración"**: era un bug de implementación (ver *Uncertainty Methods*); corregido, en este protocolo es significativamente positivo (+0.0007, p=0.044).
 
 Artefactos en `results_4pct/` y `results_foundation_universeg_4pct/` (gitignored), con sus `statistical_tests.csv`.
 
 ---
 
-## Studies
+## Ablation Studies
+
+> **Nota**: los estudios 2–4 usan el protocolo inicial (10 pasadas MC, sin TTA para UniVerSeg; excepción: la fila G del estudio 3, de la ejecución final). Se conservan como referencia comparativa.
 
 ### 1. Impact of foreground threshold on metrics
 
-Evaluated on increasingly strict subsets of the test set (ejecución final):
+Evaluated on increasingly strict subsets of the test set (ejecución final, filtrando el test set del 1% por umbral, sin reentrenar):
 
 | Threshold | Test imgs | UNet Dice | UniVerSeg Dice |
 |:---------:|:---------:|:---------:|:--------------:|
@@ -214,7 +235,7 @@ Evaluated on increasingly strict subsets of the test set (ejecución final):
 - **UNet**: Peaks at 2-3% threshold (Dice 0.929); declines past 4% due to training data scarcity at higher thresholds.
 - **UniVerSeg**: Also peaks at 2-3% (Dice 0.808) with the G-channel input, and declines for the largest tumors.
 
-### 2. UniVerSeg: context-size impact (RGB input, re-evaluar con G channel)
+### 2. UniVerSeg: context-size impact (protocolo inicial, entrada RGB)
 
 Con entrada RGB completa (3 canales promediados):
 
@@ -230,8 +251,6 @@ Con entrada RGB completa (3 canales promediados):
 | **128** | **0.846** | **0.576** | 0.270 |
 
 > Con canal G (T1c) el rendimiento mejora significativamente: ctx=64 alcanza **Dice 0.758** en test. Ver estudio #3.
-
-*(Estudios #2–#4: medidos con el protocolo inicial, 10 pasadas MC y sin TTA para UniVerSeg; se mantienen como referencia comparativa.)*
 
 ### 3. UniVerSeg: input channel impact (RGB vs G channel)
 
@@ -289,19 +308,6 @@ results/
     └── box_plot_comparison.png
 ```
 
-## Uncertainty Methods
-
-| Method | Description | UNet | UniVerSeg |
-|--------|-------------|:----:|:---------:|
-| **Normal** | Single forward pass | ✓ | ✓ |
-| **MC Dropout** | 30 passes with random dropout (p=0.01) on all layers | ✓ | ✓ |
-| **TTA** | UNet: flip + scales + intensity (30 combinations) + average. UniVerSeg: 9 photometric transforms (identity, intensity ×, gamma, contrast, bias) | ✓ | ✓† |
-| **Noisy** | 30 passes with Gaussian noise (σ=0.01 UNet / 0.1 UniVerSeg) added to input | ✓ | ✓ |
-| **Fusion** | Uncertainty-weighted average of MC+TTA+Noisy (inverse weighting) | ✓ | ✓ |
-| **CRF** | Dense CRF refinement (numpy/OpenCV, edge-stopped kernels, 3 iterations) | ✓ | ✓ |
-
-> † UniVerSeg TTA uses size- and orientation-preserving photometric transforms only: ttach's Scale breaks on models with internal resizing (deaugmented masks come back as mixed sizes 256/128/64 → stack error), and flips are invalid for in-context models with a fixed support set (they break query-support matching: flip-averaged TTA drops support Dice from 0.94 to 0.14).
-
 ## Project Structure
 
 ```
@@ -354,10 +360,6 @@ results/
         ├── *_1.tif                ─ Imagen RGB (R=T1, G=T1c, B=FLAIR)
         └── *_1_mask.tif           ─ Máscara binaria
 ```
-
-## CRF Refinement
-
-Pure numpy/OpenCV CRF (Krähenbühl & Koltun 2012). Gaussian + bilateral kernels in log-space. Falls back to Gaussian-only if OpenCV unavailable. For pydensecrf (Python ≤3.11): `pip install pydensecrf`.
 
 ## Tests
 

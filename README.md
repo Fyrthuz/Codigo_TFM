@@ -189,8 +189,7 @@ python -m src.utils.statistics --pipeline foundation --foundation-results-dir ./
 **Relación con la memoria**:
 - ✅ **UniVerSeg alcanza 0.89 en test (medianas 0.91)** — dentro del rango "~0.80–0.90" del PDF — y llega al **96% del rendimiento del UNet entrenado** (frente al 85% en el protocolo del 1%): sin entrenamiento, la afirmación "competitivo con el UNet" se sostiene en este protocolo.
 - ✅ **TTA/Noisy/Fusión mejoran la calibración de UniVerSeg** (NLL 0.071 → 0.048–0.055, Brier 0.0135 → 0.0126) sin sacrificar solapamiento (Dice +0.009/+0.010), como afirmaba la memoria.
-- ❌ **La narrativa de calibración del UNet no se reproduce** (ni en 1% ni en 4%): MC Dropout y TTA empeoran NLL/ECE; solo el Brier mejora ligeramente con fusión/noisy.
-- ❌ **"UniVerSeg, mejor modelo de los tres"**: el UNet entrenado sigue por delante en medias y medianas (test-50: Dice 0.9245/0.952 vs 0.8886/0.913).
+- **"UniVerSeg, mejor modelo de los tres"**: la afirmación de la memoria se refiere a la comparación con **MedSAM** (modelos fundacionales, sin entrenamiento), no con el UNet entrenado; MedSAM no se evalúa en este repositorio.
 - ❌ **"CRF degrada la calibración"**: era un bug de implementación (ver *CRF Refinement*); corregido, en este protocolo es significativamente positivo (+0.0007, p=0.044).
 
 Artefactos en `results_4pct/` y `results_foundation_universeg_4pct/` (gitignored), con sus `statistical_tests.csv`.

@@ -66,6 +66,12 @@ Split por paciente, 144 imágenes de test (pacientes no vistos), 30 muestras MC/
 >
 > **Notas**: La métrica de referencia (Dice 0.894) usa todos los tamaños de tumor (1-7%). Sobre tumores >3% (72 imágenes) el Dice sube a 0.929. Tras corregir la implementación del CRF (pesos ~10× menores, sin mezcla del unario hacia el uniforme, kernel bilateral operativo y parada en bordes de la imagen), el post-proceso ya no degrada el resultado: rinde igual o levemente por encima de la fusión.
 
+![Máscaras por método — UNet](docs/qualitative_unet.png)
+*Tres casos de test (fácil / típico / difícil, elegidos por percentiles de Dice): máscara predicha (rojo) sobre la imagen, contorno ground truth (amarillo), Dice de cada método e incertidumbre de la fusión.*
+
+![Distribución de métricas — UNet](docs/distribution_unet.png)
+*Distribución por slice (144 slices de test) de Dice, IoU, NLL_fg y ECE para cada método; los puntos son slices individuales.*
+
 ### UniVerSeg (G channel T1c, context-size 64)
 
 | Método de incertidumbre | Test Dice | Test IoU | Test ECE | Support Dice | Support IoU |
@@ -80,6 +86,12 @@ Split por paciente, 144 imágenes de test (pacientes no vistos), 30 muestras MC/
 > TTA ahora disponible: 9 transformaciones fotorrométricas (ver tabla de métodos). Canal G (T1c) usado en lugar de RGB completo — ver estudio #3.
 
 > UniVerSeg con canal G (T1c) alcanza el **85% del rendimiento de UNet sin necesidad de entrenamiento** (Dice 0.758 vs 0.894). Sobre las imágenes de soporte (que ya ha visto en contexto), iguala a UNet (Dice 0.939).
+
+![Máscaras por método — UniVerSeg](docs/qualitative_universeg.png)
+*Tres casos de test no vistos (fácil / típico / difícil): máscara predicha (rojo), contorno ground truth (amarillo), Dice por método e incertidumbre de la fusión.*
+
+![Distribución de métricas — UniVerSeg](docs/distribution_universeg.png)
+*Distribución por slice (144 slices de test de pacientes no vistos) de Dice, IoU, NLL_fg y ECE; se aprecia la cola de casos difíciles (Dice≈0) y el mejor calibrado de TTA/Noisy/Fusión frente a MC Dropout.*
 
 ---
 
@@ -117,6 +129,71 @@ python -m src.utils.statistics --pipeline all   # → statistical_tests.csv en c
 - **UNet**: la fusión mejora al Normal de forma pequeña pero sistemática y significativa (+0.005 Dice, **los 17 pacientes mejoran**, p<0.001); el CRF corregido también añade una mejora significativa sobre la fusión (p=0.001). TTA y Noisy no se distinguen del Normal.
 - **UniVerSeg**: fusión y noisy muestran la misma dirección (+0.006 / +0.008 Dice) pero **sin alcanzar significancia con 17 pacientes** (los intervalos incluyen 0); el CRF corregido es estadísticamente indistinguible de la fusión (p=1.0). Confirmar el efecto requeriría un test set mayor o validación cruzada.
 - p-valores sin corregir por comparaciones múltiples (análisis exploratorio); `statistical_tests.csv` incluye además `cohen_dz`, % de slices mejoradas y tamaños por comparación.
+
+![Resumen estadístico](docs/statistical_summary.png)
+*ΔDice (A − B) con IC 95% bootstrap a nivel de paciente y p-valor de Wilcoxon por comparación; en color las significativas (verde = mejora, rojo = empeora), en gris las no significativas.*
+
+---
+
+## 4% Protocol (thesis reproduction)
+
+The thesis (`TFM_Gonzalez_Salas_Fernando.pdf`) reported its analyses on a **372-image subset**: exactly the slices with >4% tumour foreground in the raw dataset (3,929 slices → 1,373 with tumour → 372 above 4%). The main tables above use the 1%-filtered dataset (1,060 images, 144 test slices); this section reproduces the thesis protocol for comparison — same patient split (seed 42), same pipeline, same metrics. UniVerSeg keeps a 64-slice context drawn from train patients and is therefore evaluated on unseen patients (val+test, 87 slices); the UNet is evaluated on all 372.
+
+```bash
+python -m src.utils.protocol_subset --threshold 0.04   # → MRI/filtered_data_4pct + índices
+python -m src.pipelines.run_unet --config configs/pipeline_2d_4pct.yaml \
+    --checkpoint unet_model.pth --test-indices MRI/filtered_data_4pct/protocol_all.json
+python -m src.pipelines.run_foundation --config configs/foundation_universeg_4pct.yaml \
+    --test-indices MRI/filtered_data_4pct/protocol_val_test.json --context-size 64
+python -m src.utils.statistics --pipeline unet --results-dir ./results_4pct \
+    --data-root ./MRI/filtered_data_4pct --test-indices MRI/filtered_data_4pct/protocol_all.json
+python -m src.utils.statistics --pipeline foundation --foundation-results-dir ./results_foundation_universeg_4pct \
+    --data-root ./MRI/filtered_data_4pct --test-indices MRI/filtered_data_4pct/protocol_val_test.json
+```
+
+### UNet 2D — 372 imágenes
+
+| Método | Dice | IoU | NLL | NLL_fg | ECE | Certainty |
+|--------|:----:|:---:|:---:|:------:|:---:|:---------:|
+| Normal | 0.928 | 0.869 | 0.037 | 0.221 | 0.012 | 0.894 |
+| MC Dropout | 0.928 | 0.869 | 0.048 | 0.218 | 0.026 | 0.717 |
+| TTA | 0.917 | 0.852 | 0.041 | 0.301 | 0.020 | 0.573 |
+| Noisy | 0.928 | 0.870 | 0.037 | 0.219 | 0.012 | 0.825 |
+| **Fusión** | **0.929** | **0.871** | 0.037 | 0.215 | 0.016 | 0.777 |
+| CRF | 0.929 | 0.871 | 0.037 | 0.215 | 0.016 | 0.749 |
+
+### UniVerSeg — val+test no vistos (87)
+
+| Método | Dice | IoU | NLL | NLL_fg | ECE | Brier | Certainty |
+|--------|:----:|:---:|:---:|:------:|:---:|:-----:|:---------:|
+| Normal | 0.847 | 0.751 | 0.071 | 0.260 | 0.0135 | 0.0135 | 0.813 |
+| MC Dropout | 0.848 | 0.752 | 0.070 | 0.278 | 0.0280 | 0.0135 | 0.603 |
+| TTA | 0.856 | 0.762 | 0.048 | 0.243 | 0.0131 | 0.0126 | 0.716 |
+| Noisy | **0.857** | **0.764** | 0.055 | 0.239 | 0.0135 | 0.0126 | 0.725 |
+| Fusión | 0.856 | 0.762 | 0.055 | 0.245 | 0.0136 | 0.0126 | 0.718 |
+| CRF | 0.856 | 0.763 | 0.047 | 0.245 | 0.0137 | 0.0126 | 0.709 |
+
+![Máscaras por método — UNet (4%)](docs/qualitative_4pct_unet.png)
+![Máscaras por método — UniVerSeg (4%)](docs/qualitative_4pct_universeg.png)
+*Tres casos (fácil / típico / difícil): UNet sobre las 372 slices (arriba) y UniVerSeg sobre val+test no vistos (abajo).*
+
+![Distribución de métricas — UNet (4%)](docs/distribution_4pct_unet.png)
+![Distribución de métricas — UniVerSeg (4%)](docs/distribution_4pct_universeg.png)
+*Distribución por slice de Dice, IoU, NLL_fg y ECE en el protocolo 4%.*
+
+**Estadística (nivel paciente)**: UniVerSeg fusión vs normal **+0.0086 Dice**, IC95% [+0.0010, +0.0227], p=0.051 (81% de pacientes mejoran); CRF vs fusión **+0.0007**, p=0.044. UNet: fusión vs normal +0.0010, p=0.001; TTA vs normal **-0.0115**, p=0.043 (empeora).
+
+![Estadística del protocolo 4%](docs/statistical_summary_4pct.png)
+*Tests pareados por paciente en el protocolo 4% (372 slices / 56 pacientes en UNet; 87 slices / 16 pacientes en UniVerSeg).*
+
+**Relación con la memoria**:
+- ✅ **UniVerSeg alcanza 0.89 en test (medianas 0.91)** — dentro del rango "~0.80–0.90" del PDF — y llega al **96% del rendimiento del UNet entrenado** (frente al 85% en el protocolo del 1%): sin entrenamiento, la afirmación "competitivo con el UNet" se sostiene en este protocolo.
+- ✅ **TTA/Noisy/Fusión mejoran la calibración de UniVerSeg** (NLL 0.071 → 0.048–0.055, Brier 0.0135 → 0.0126) sin sacrificar solapamiento (Dice +0.009/+0.010), como afirmaba la memoria.
+- ❌ **La narrativa de calibración del UNet no se reproduce** (ni en 1% ni en 4%): MC Dropout y TTA empeoran NLL/ECE; solo el Brier mejora ligeramente con fusión/noisy.
+- ❌ **"UniVerSeg, mejor modelo de los tres"**: el UNet entrenado sigue por delante en medias y medianas (test-50: Dice 0.9245/0.952 vs 0.8886/0.913).
+- ❌ **"CRF degrada la calibración"**: era un bug de implementación (ver *CRF Refinement*); corregido, en este protocolo es significativamente positivo (+0.0007, p=0.044).
+
+Artefactos en `results_4pct/` y `results_foundation_universeg_4pct/` (gitignored), con sus `statistical_tests.csv`.
 
 ---
 
@@ -252,22 +329,27 @@ results/
 │       ├── fusion.py              ─ weighted_average_with_uncertainty()
 │       ├── crf.py                 ─ Dense CRF mean-field (numpy/OpenCV, parada en bordes)
 │       ├── statistics.py          ─ Tests pareados por paciente (bootstrap + Wilcoxon)
+│       ├── protocol_subset.py     ─ Construye el protocolo 4% (372 imágenes) + índices
+│       ├── make_figures.py        ─ Genera las figuras del README (docs/) desde results/
 │       ├── visualization.py       ─ save_image, plot_metrics_comparison, box plots
 │       ├── dataset.py             ─ LGGSegmentationDataset + split_by_patient()
 │       ├── filter_data_mri.py     ─ Filtrado por foreground ratio (default 1%)
 │       ├── train_unet.py          ─ Training loop (split paciente-nivel, augmentation, early stopping)
 │       └── download_datasets.py   ─ Descarga LGG desde Kaggle + filtrado
-├── tests/                         ─ 53 tests (pytest)
+├── tests/                         ─ 68 tests (pytest)
 │   ├── test_models.py, test_mc_dropout.py, test_tta.py, test_noise.py
 │   ├── test_metrics.py, test_fusion.py, test_crf.py
 │   ├── test_datasets.py, test_config.py, test_foundation_models.py
 ├── configs/
 │   ├── pipeline_2d.yaml           ─ Config UNet (paths, inferencia, fusión, CRF)
-│   └── foundation_universeg.yaml  ─ Config UniVerSeg
+│   ├── pipeline_2d_4pct.yaml      ─ Config UNet para el protocolo 4% (372 imágenes)
+│   ├── foundation_universeg.yaml  ─ Config UniVerSeg
+│   └── foundation_universeg_4pct.yaml ─ Config UniVerSeg para el protocolo 4%
 ├── scripts/
 │   ├── download_data.sh           ─ ./scripts/download_data.sh lgg
 │   ├── run_pipeline_2d.sh         ─ UNet pipeline (entrenar + evaluar)
 │   └── run_foundation.sh          ─ UniVerSeg pipeline
+├── docs/                          ─ Figuras del README (generadas con make_figures.py)
 └── MRI/filtered_data/             ─ Dataset filtrado (1%, ~1060 imágenes, 108 pacientes)
     └── TCGA_CS_4941_19960909/
         ├── *_1.tif                ─ Imagen RGB (R=T1, G=T1c, B=FLAIR)

@@ -12,6 +12,8 @@ def main():
                         help="Path to YAML config file")
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Path to UNet checkpoint (optional — trains if missing)")
+    parser.add_argument("--test-indices", type=str, default="test_indices.json",
+                        help="Path to test indices file")
     parser.add_argument("--train", action="store_true",
                         help="Train a model first, then run the pipeline")
     parser.add_argument("--epochs", type=int, default=5,
@@ -22,8 +24,9 @@ def main():
 
     if args.train or (args.checkpoint and not os.path.exists(args.checkpoint)):
         print("Training UNet...")
-        from src.utils.train_unet import main as train_main
         import sys
+
+        from src.utils.train_unet import main as train_main
         sys.argv = [
             "train_unet",
             "--data-root", config.paths.get("root_path", "./MRI/filtered_data"),
@@ -40,13 +43,15 @@ def main():
             print(f"Using checkpoint: {args.checkpoint}")
         else:
             print("No checkpoint found. Training a model first...")
-            from src.utils.train_unet import main as train_main
             import sys
+
+            from src.utils.train_unet import main as train_main
             sys.argv = ["train_unet", "--data-root", config.paths.get("root_path", "./MRI/filtered_data")]
             train_main()
             args.checkpoint = "unet_model.pth"
 
-    pipeline = UNetPipeline.from_yaml(args.config, checkpoint_path=args.checkpoint)
+    pipeline = UNetPipeline.from_yaml(args.config, checkpoint_path=args.checkpoint,
+                                      test_indices_path=args.test_indices)
     pipeline.run()
 
 

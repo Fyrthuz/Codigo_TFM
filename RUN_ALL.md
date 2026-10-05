@@ -95,3 +95,28 @@ Bootstrap a nivel de paciente (10.000 remuestreos, sin pseudo-replicación de sl
 
 - **UNet**: Fusión vs Normal es significativa (ΔDice **+0.0050**, IC95% [+0.0022, +0.0098], p<0.001, **17/17 pacientes mejoran**); CRF vs Fusión también (+0.0008, p=0.001).
 - **UniVerSeg**: Fusión (+0.0058) y Noisy (+0.0079) van en la misma dirección pero no alcanzan significancia con 17 pacientes (IC incluye 0); CRF vs Fusión indistinguible (p=1.0).
+
+---
+
+## Protocolo 4% (reproducción de la memoria, 372 imágenes)
+
+```bash
+python -m src.utils.protocol_subset --threshold 0.04
+python -m src.pipelines.run_unet --config configs/pipeline_2d_4pct.yaml --checkpoint unet_model.pth --test-indices MRI/filtered_data_4pct/protocol_all.json
+python -m src.pipelines.run_foundation --config configs/foundation_universeg_4pct.yaml --test-indices MRI/filtered_data_4pct/protocol_val_test.json --context-size 64
+python -m src.utils.statistics --pipeline unet --results-dir ./results_4pct --data-root ./MRI/filtered_data_4pct --test-indices MRI/filtered_data_4pct/protocol_all.json
+python -m src.utils.statistics --pipeline foundation --foundation-results-dir ./results_foundation_universeg_4pct --data-root ./MRI/filtered_data_4pct --test-indices MRI/filtered_data_4pct/protocol_val_test.json
+```
+
+- 372 = slices con >4% de tumor (285 train + 37 val + 50 test), mismo split de pacientes (seed 42). UniVerSeg se evalúa sobre val+test (87) con contexto de 64 train.
+- Artefactos: `results_4pct/` y `results_foundation_universeg_4pct/` (gitignored), con `statistical_tests.csv` en cada `visualizations/`. Comparativa detallada con la memoria en el README.
+
+---
+
+## Figuras del README
+
+```bash
+python -m src.utils.make_figures    # → docs/*.png
+```
+
+Genera con los resultados guardados: paneles cualitativos (máscaras por método, 3 casos fáciles/típicos/difíciles), distribuciones de métricas por método y forest plots de los tests estadísticos — para los dos protocolos (1% y 4%) y los dos modelos.
